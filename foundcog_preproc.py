@@ -586,7 +586,7 @@ for sub, sub_items in iter_items.items():
         preproc.run()
     else:
         # Or SLURM?
-        preproc.run(plugin='SLURMGraph', plugin_args = {'dont_resubmit_completed_jobs': False, 'jobnameprefix':sub})
+        preproc.run(plugin='SLURM', plugin_args = {'dont_resubmit_completed_jobs': False, 'jobnameprefix':sub})
     subs_run.append(sub)
 
 with open(f'.githash/{timestamp}_githash.txt', 'a') as f:
