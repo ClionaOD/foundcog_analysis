@@ -344,15 +344,9 @@ for sub, sub_items in iter_items.items():
     # TODO: change this to Julich and Schaefer paths
     if sub[0] == '9':
         schaefer_roi = '/foundcog/templates/rois/Schaefer2018_400Parcels_7Networks_order_space-nihpd-08-11_2mm.nii.gz'
-        a424_roi = '/foundcog/templates/rois/A424_space-nihpd-08-11_2mm.nii.gz'
     else:
         schaefer_roi = '/foundcog/templates/rois/Schaefer2018_400Parcels_7Networks_order_space-nihpd-02-05_2mm.nii.gz'
-        a424_roi = '/foundcog/templates/rois/A424_space-nihpd-02-05_2mm.nii.gz'
  
-    # get labels for 424 - derive from file to make sure they correspond
-    a424_roi_labels = np.unique(np.asanyarray(nib.load(a424_roi).dataobj))
-    a424_roi_labels = list(a424_roi_labels[a424_roi_labels != 0])
-
     def flirt_fig(in_file,template):
         import os
 
@@ -402,9 +396,6 @@ for sub, sub_items in iter_items.items():
     # Niworkflows SignalExtraction for ROI Extraction
     roi_extraction = Node(SignalExtraction(label_files=schaefer_roi, class_labels=schaefer_roi_labels), name=f'roi_extraction') 
     roi_extraction.plugin_args =  {'overwrite':True, 'sbatch_args': '--mem=16G'}
-
-    roi_extraction_a424 = Node(SignalExtraction(label_files=a424_roi, class_labels=a424_roi_labels), name=f'roi_extraction_a424') 
-    roi_extraction_a424.plugin_args =  {'overwrite':True, 'sbatch_args': '--mem=16G'}
 
     def get_globals(in_file):
         '''Calculate global signal timecourse with mask from nilearn's compute_epi_mask'''
@@ -572,9 +563,6 @@ for sub, sub_items in iter_items.items():
         # ROI Extraction
         preproc.connect(smooth_epi, "smoothed_file", roi_extraction, "in_file")
         preproc.connect(roi_extraction, "out_file", datasink_run, "roi_extraction")
-
-        preproc.connect(smooth_epi, "smoothed_file", roi_extraction_a424, "in_file")
-        preproc.connect(roi_extraction_a424, "out_file", datasink_run, "roi_extraction_a424")
 
         # Calculate globals
         preproc.connect(smooth_epi, "smoothed_file", globals_node, "in_file")
