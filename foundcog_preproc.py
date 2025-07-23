@@ -158,14 +158,27 @@ for sub, sub_items in iter_items.items():
     datasink_run = Node(DataSink(base_directory=experiment_dir,
                             container=output_dir),
                     name="datasink_run")
+    datasink_run.inputs.regexp_substitutions = [
+        (r'_run_(\d+)_session_(\d+)_task_name_([^/]+)', r'ses-\2_run-\1_task-\3'),
+        (r'_subject_id_(\d+)', r'sub-\1'),
+    ]
+
     #  for stuff output once per subject
     datasink_subj = Node(DataSink(base_directory=experiment_dir,
                             container=output_dir),
                     name="datasink_subj")
+    datasink_subj.inputs.regexp_substitutions = [
+        (r'_subject_id_(\d+)/(.*)', r'sub-\1/\2')
+    ]
     #  for stuff output once per dof
     datasink_dof = Node(DataSink(base_directory=experiment_dir,
                             container=output_dir),
                     name="datasink_dof")
+    datasink_dof.inputs.regexp_substitutions = [
+        (r'_subject_id_(\d+)/(.*)', r'sub-\1/\2'),
+        (r'_dof_(\d+)', r'dof-\1')
+    ]
+
 
     # Distortion correction using topup
     join_fmap = JoinNode(IdentityInterface(fields = ['subject']), name='join_fmap', joinsource='infosource', joinfield='subject', unique=True)
@@ -586,7 +599,13 @@ for sub, sub_items in iter_items.items():
         preproc.run()
     else:
         # Or SLURM?
-        preproc.run(plugin='SLURM', plugin_args = {'dont_resubmit_completed_jobs': False, 'jobnameprefix':sub})
+        preproc.run(
+            plugin='SLURMGraph',
+            plugin_args = {
+                'dont_resubmit_completed_jobs': False, 
+                'jobnameprefix':f'sub-{sub}',
+            }
+        )
     subs_run.append(sub)
 
 with open(f'.githash/{timestamp}_githash.txt', 'a') as f:

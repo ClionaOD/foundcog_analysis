@@ -156,6 +156,10 @@ def get_wf_bold_preproc(experiment_dir, working_dir, output_dir):
     datasink = Node(DataSink(base_directory=experiment_dir,
                             container=output_dir),
                     name="datasink")
+    datasink.inputs.regexp_substitutions = [
+        (r'_subject_id_(\d+)', r'sub-\1'),
+        (r'_run_(\d+)_session_(\d+)_task_name_([^/]+)', r'ses-\2_run-\1_task-\3'),
+    ]
 
     preproc.connect(inputnode, 'func', motion_correct,  'in_file')
     preproc.connect(inputnode, 'func', extract_ref, 'in_file')
