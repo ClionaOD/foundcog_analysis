@@ -330,14 +330,10 @@ for sub, sub_items in iter_items.items():
     if sub[0] == '9':
         template = '/foundcog/templates/mask/nihpd_asym_08-11_t2w_fcgmasked.nii.gz'
         template_for_norm = '/foundcog/templates/nihpd_asym/nihpd_asym_08-11_t2w.nii'
-        template_for_norm_t1w = '/foundcog/templates/nihpd_asym/nihpd_asym_08-11_t1w.nii'
-        template_for_norm_2mm = '/foundcog/templates/mask/nihpd_asym_08-11_t2w_2mm.nii.gz'
     else:
         template = '/foundcog/templates/mask/nihpd_asym_02-05_t2w_fcgmasked.nii.gz'
         template_for_norm = '/foundcog/templates/nihpd_asym/nihpd_asym_02-05_t2w.nii'
-        template_for_norm_t1w = '/foundcog/templates/nihpd_asym/nihpd_asym_02-05_t1w.nii'
-        template_for_norm_2mm = '/foundcog/templates/mask/nihpd_asym_02-05_t2w_2mm.nii.gz'
-
+        
     # Location of roi file
     schaefer_roi_labels = np.arange(1,401).tolist()
 
