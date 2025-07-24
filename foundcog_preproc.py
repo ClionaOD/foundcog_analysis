@@ -53,13 +53,10 @@ task_list.sort()
 session_list.sort()
 run_list.sort()
 
-subject_list = subject_list[1:3]
-
 # # TR of functional images
 with open(path.join(experiment_dir, "task-pictures_bold.json"), "rt") as fp:
     task_info = json.load(fp)
 TR = task_info["RepetitionTime"]
-
 
 # subject_list=subject_list[1:] # for testing, just one subject
 
@@ -866,10 +863,10 @@ for sub, sub_items in iter_items.items():
     preproc.write_graph(graph2use="colored", format="png", simple_form=True)
 
     # Visualize the graph
-    Image(filename=path.join(preproc.base_dir, "graph.png"))
+    Image(filename=path.join(preproc.base_dir, "foundcog_preproc", "graph.png"))
     # Visualize the detailed graph
     preproc.write_graph(graph2use="flat", format="png", simple_form=True)
-    Image(filename=path.join(preproc.base_dir, "graph_detailed.png"))
+    Image(filename=path.join(preproc.base_dir, "foundcog_preproc", "graph_detailed.png"))
 
     # RUN
     if SINGLE_THREADED:

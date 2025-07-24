@@ -179,14 +179,14 @@ def get_wf_bold_preproc(experiment_dir, working_dir, output_dir):
     preproc.connect(inputnode, "func", get_reference_node, "func")
     preproc.connect(get_reference_node, "reference", extract_ref, "t_min")
     preproc.connect(extract_ref, "roi_file", motion_correct, "ref_file")
-    preproc.connect([(motion_correct, normalize_motion, [("par_file", "in_file")])])
+    preproc.connect(motion_correct, "par_file", normalize_motion, "in_file")
     preproc.connect(motion_correct, "par_file", plot_motion, "in_file")
-    preproc.connect([(plot_motion, join_plot_motion, [("out_file", "out_file")])])
+    preproc.connect(plot_motion, "out_file",join_plot_motion,  "out_file")
     preproc.connect(normalize_motion, "out_file", calc_fwd, "in_file")
 
-    preproc.connect([(join_plot_motion, datasink, [("out_file", "motion_plots")])])
-    preproc.connect([(motion_correct, datasink, [("par_file", "motion_parameters")])])
-    preproc.connect([(calc_fwd, datasink, [("out_file", "motion_fwd")])])
+    preproc.connect(join_plot_motion, "out_file", datasink, "motion_plots")
+    preproc.connect(motion_correct, "par_file", datasink, "motion_parameters")
+    preproc.connect(calc_fwd, "out_file", datasink, "motion_fwd")
 
     preproc.connect(inputnode, "func", plot_bad_volumes_node, "in_file")
     preproc.connect(calc_fwd, "out_file", plot_bad_volumes_node, "fwd")
@@ -197,6 +197,6 @@ def get_wf_bold_preproc(experiment_dir, working_dir, output_dir):
     preproc.connect(
         [(motion_correct, outputnode, [("out_file", "func"), ("par_file", "par_file")])]
     )
-    preproc.connect([(calc_fwd, outputnode, [("out_file", "fwd_file")])])
+    preproc.connect(calc_fwd, "out_file", outputnode, "fwd_file")
 
     return preproc
