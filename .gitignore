@@ -211,3 +211,4 @@ outputs/
 .githash/
 .vscode/
 release_updates/
+foundcog_analysis.code-workspace
