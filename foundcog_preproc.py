@@ -32,6 +32,10 @@ DEFAULT_MEM = "100"
 # Change this to the path where you have the BIDS dataset
 experiment_dir = path.abspath(path.join("/foundcog", "dataset_sharing"))
 database_path = path.abspath(path.join(experiment_dir, "bidsdatabase"))
+output_dir = path.join(
+    f"derivatives", "foundcog_preproc"
+)  # will be linked with experiment_dir in DataSink
+
 layout = BIDSLayout(experiment_dir, database_path=database_path)
 
 # Path to the reference files, such as templates
@@ -48,6 +52,8 @@ subject_list.sort()
 task_list.sort()
 session_list.sort()
 run_list.sort()
+
+subject_list = subject_list[1:3]
 
 # # TR of functional images
 with open(path.join(experiment_dir, "task-pictures_bold.json"), "rt") as fp:
@@ -161,7 +167,6 @@ for sub, sub_items in iter_items.items():
 
     # absolute path from experiment_dir will be used in line516 below
     working_dir = f"workingdir/{sub}"
-    output_dir = f"derivatives/foundcog_preproc"
 
     # INPUT DATA
     infosource_sub = Node(
@@ -613,8 +618,8 @@ for sub, sub_items in iter_items.items():
     bold_preproc = get_wf_bold_preproc(experiment_dir, working_dir, output_dir)
 
     # Base workflow
-    preproc = Workflow(name="preproc")
-    preproc.base_dir = path.join(experiment_dir, working_dir, output_dir)
+    preproc = Workflow(name="foundcog_preproc")
+    preproc.base_dir = path.join(experiment_dir, working_dir)
 
     preproc.connect(infosource_sub, "subject_id", infosource, "subject_id")
 
@@ -861,10 +866,10 @@ for sub, sub_items in iter_items.items():
     preproc.write_graph(graph2use="colored", format="png", simple_form=True)
 
     # Visualize the graph
-    Image(filename=path.join(preproc.base_dir, "preproc", "graph.png"))
+    Image(filename=path.join(preproc.base_dir, "graph.png"))
     # Visualize the detailed graph
     preproc.write_graph(graph2use="flat", format="png", simple_form=True)
-    Image(filename=path.join(preproc.base_dir, "preproc", "graph_detailed.png"))
+    Image(filename=path.join(preproc.base_dir, "graph_detailed.png"))
 
     # RUN
     if SINGLE_THREADED:
