@@ -33,7 +33,7 @@ DEFAULT_MEM = "100"
 experiment_dir = path.abspath(path.join("/foundcog", "dataset_sharing"))
 database_path = path.abspath(path.join(experiment_dir, "bidsdatabase"))
 output_dir = path.join(
-    f"derivatives", "foundcog_preproc"
+    "derivatives", "foundcog_preproc"
 )  # will be linked with experiment_dir in DataSink
 
 layout = BIDSLayout(experiment_dir, database_path=database_path)
@@ -163,7 +163,7 @@ subs_run = []
 for sub, sub_items in iter_items.items():
 
     # absolute path from experiment_dir will be used in line516 below
-    working_dir = f"workingdir/{sub}"
+    working_dir = path.join("workingdir",sub)
 
     # INPUT DATA
     infosource_sub = Node(
