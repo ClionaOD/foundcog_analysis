@@ -8,6 +8,7 @@ import git
 import nibabel as nib
 import numpy as np
 from bids.layout import BIDSLayout
+from IPython.display import Image
 from nipype import Function, JoinNode, MapNode, Node, Workflow, config
 from nipype.interfaces import ants, fsl
 from nipype.interfaces.io import DataSink, SelectFiles
@@ -246,7 +247,7 @@ for sub, sub_items in iter_items.items():
 
     # Get fmap for this session
     def bg_fmap_files(experiment_dir, database_path, subject_id, fmap_session):
-        from os import path
+
         from bids.layout import BIDSLayout
 
         layout = BIDSLayout(experiment_dir, database_path=database_path)
@@ -615,11 +616,7 @@ for sub, sub_items in iter_items.items():
     preproc = Workflow(name="preproc")
     preproc.base_dir = path.join(experiment_dir, working_dir, output_dir)
 
-    preproc.connect(
-        [
-            (infosource_sub, infosource, [("subject_id", "subject_id")]),
-        ]
-    )
+    preproc.connect(infosource_sub, "subject_id", infosource, "subject_id")
 
     preproc.connect(
         [
@@ -635,31 +632,27 @@ for sub, sub_items in iter_items.items():
             )
         ]
     )
-    preproc.connect([(infosource, join_fmap, [("subject_id", "subject")])])
 
-    preproc.connect([(selectfiles, bold_preproc, [("func", "inputnode.func")])])
+    preproc.connect(infosource, "subject_id", join_fmap, "subject")
+
+    preproc.connect(selectfiles, "func", bold_preproc, "inputnode.func")
 
     # Calculate PE polar distortion correction field using topup
     if are_fmaps:
+        preproc.connect(infosource_sub, "subject_id", bg_fmap_files_node, "subject_id")
+
+        preproc.connect(bg_fmap, "fmap_session", bg_fmap_files_node, "fmap_session")
+
+        preproc.connect(bg_fmap_files_node, "fmap", select_fmaps_node, "in_files")
+
+        preproc.connect(select_fmaps_node, "out_files", hmc_fmaps, "in_file")
+        preproc.connect(hmc_fmaps, "out_file", mean_fmaps, "in_file")
+        preproc.connect(mean_fmaps, "out_file", merge_fmaps, "in_files")
+        preproc.connect(select_fmaps_node, "readout_times", topup, "readout_times")
         preproc.connect(
-            [(infosource_sub, bg_fmap_files_node, [("subject_id", "subject_id")])]
+            select_fmaps_node, "encoding_direction", topup, "encoding_direction"
         )
-        preproc.connect(
-            [(bg_fmap, bg_fmap_files_node, [("fmap_session", "fmap_session")])]
-        )
-        preproc.connect(
-            [(bg_fmap_files_node, select_fmaps_node, [("fmap", "in_files")])]
-        )
-        preproc.connect([(select_fmaps_node, hmc_fmaps, [("out_files", "in_file")])])
-        preproc.connect([(hmc_fmaps, mean_fmaps, [("out_file", "in_file")])])
-        preproc.connect([(mean_fmaps, merge_fmaps, [("out_file", "in_files")])])
-        preproc.connect(
-            [(select_fmaps_node, topup, [("readout_times", "readout_times")])]
-        )
-        preproc.connect(
-            [(select_fmaps_node, topup, [("encoding_direction", "encoding_direction")])]
-        )
-        preproc.connect([(merge_fmaps, topup, [("merged_file", "in_file")])])
+        preproc.connect(merge_fmaps, "merged_file", topup, "in_file")
 
         # Apply topup
         preproc.connect(bold_preproc, "outputnode.func", applytopup, "in_files")
@@ -868,8 +861,6 @@ for sub, sub_items in iter_items.items():
     preproc.write_graph(graph2use="colored", format="png", simple_form=True)
 
     # Visualize the graph
-    from IPython.display import Image
-
     Image(filename=path.join(preproc.base_dir, "preproc", "graph.png"))
     # Visualize the detailed graph
     preproc.write_graph(graph2use="flat", format="png", simple_form=True)
