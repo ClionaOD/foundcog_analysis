@@ -162,9 +162,6 @@ f.close()
 subs_run = []
 for sub, sub_items in iter_items.items():
 
-    # absolute path from experiment_dir will be used in line516 below
-    working_dir = path.join("workingdir",sub)
-
     # INPUT DATA
     infosource_sub = Node(
         IdentityInterface(fields=["subject_id"]), name="infosource_sub"
@@ -611,6 +608,9 @@ for sub, sub_items in iter_items.items():
         name=f"out_file",
     )
 
+    # absolute path from experiment_dir will be used in line516 below
+    working_dir = path.join("workingdir", sub)
+
     # BOLD preprocessing workflow
     bold_preproc = get_wf_bold_preproc(experiment_dir, working_dir, output_dir)
 
@@ -866,7 +866,9 @@ for sub, sub_items in iter_items.items():
     Image(filename=path.join(preproc.base_dir, "foundcog_preproc", "graph.png"))
     # Visualize the detailed graph
     preproc.write_graph(graph2use="flat", format="png", simple_form=True)
-    Image(filename=path.join(preproc.base_dir, "foundcog_preproc", "graph_detailed.png"))
+    Image(
+        filename=path.join(preproc.base_dir, "foundcog_preproc", "graph_detailed.png")
+    )
 
     # RUN
     if SINGLE_THREADED:
