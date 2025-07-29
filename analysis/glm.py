@@ -1,12 +1,8 @@
 from os import path
 import glob
 
-from os import path
-import glob
-
 import os
 import pickle
-from collections import defaultdict
 
 import numpy as np
 import pandas as pd
@@ -38,7 +34,7 @@ class GLMPathsInputSpec(BaseInterfaceInputSpec):
         desc="Framewise displacement derivative directory for censoring",
     )
     derivative_dir = traits.Str(
-        default_value="derivatives/foundcog_preproc",
+        default_value="derivatives",
         usedefault=True,
         desc="Directory for the derivative files",
     )
@@ -145,6 +141,11 @@ class GLMPathSetter(BaseInterface):
             funcpaths = glob.glob(
                 self.func_file.format(sub=self.inputs.sub, task=self.inputs.task)
             )
+        
+        if len(funcpaths) == 0:
+            raise FileNotFoundError(
+                f"No functional images found for subject {self.inputs.sub} and task {self.inputs.task}."
+            )
 
         paths = {}
         for funcrunpath in funcpaths:
@@ -165,8 +166,12 @@ class GLMDesignInputSpec(BaseInterfaceInputSpec):
     )
     sub = traits.Str(mandatory=True, desc="Subject identifier")
     task = traits.Str(mandatory=True, desc="Task identifier")
-    tr = traits.Float(mandatory=True, desc="Repetition time (TR) in seconds")
-    brain_mask = traits.Str(mandatory=True, desc="Path to the brain mask image")
+
+    fwd_cutoff = traits.Float(
+        default_value=1.5,
+        usedefault=True,
+        desc="Framewise displacement cutoff for censoring",
+    )
 
     repetition_marking = traits.Bool(
         default_value=False,
@@ -196,12 +201,15 @@ class GLMDesignInputSpec(BaseInterfaceInputSpec):
 
 
 class GLMDesignOutputSpec(TraitedSpec):
-    hold = traits.Dict(desc="Placeholder dict")
+    design_elements_perrun = traits.Dict(desc="Design elements for each run")
 
 
 class GLMDesign(BaseInterface):
     input_spec = GLMDesignInputSpec
     output_spec = GLMDesignOutputSpec
+
+    def _list_outputs(self):
+        return self._results
 
     def _run_interface(self, runtime):
         self._results = {}
@@ -218,19 +226,63 @@ class GLMDesign(BaseInterface):
                 "Exemplar marking is only applicable for the 'pictures' task."
             )
 
-        if self.inputs.video_tag_marking:
-            if self.inputs.task != "videos":
-                raise ValueError(
-                    "Video tag marking is only applicable for the 'videos' task."
-                )
+        if (self.inputs.video_tag_marking) and (self.inputs.task != "videos"):
+            raise ValueError(
+                "Video tag marking is only applicable for the 'videos' task."
+            )
 
-        ## do stuff
+        nruns = len(self.inputs.paths["events"])
 
-        self._results["hold"] = {}
+        run_elements = {
+            "func_paths": [],
+            "events": [],
+            "confounds": [],
+            "conf_names": [],
+            "run_order": [],
+            "ses_order": [],
+        }
+        for runidx in range(nruns):
+            run_design_elements = self._get_design_elements(runidx)
+            if run_design_elements is None:
+                print(f"Skipping run {runidx} due to excessive spikes.")
+                continue
+            run_events, confounds, conf_names = run_design_elements
+
+            run_elements["func_paths"].append(self.inputs.paths["func"][runidx])
+            run_elements["events"].append(run_events)
+            run_elements["confounds"].append(confounds)
+            run_elements["conf_names"].append(conf_names)
+            run_elements["run_order"].append(self.inputs.paths["run_order"][runidx])
+            run_elements["ses_order"].append(self.inputs.paths["ses_order"][runidx])
+
+        self._results["design_elements_perrun"] = run_elements
         return runtime
 
-    def _list_outputs(self):
-        return self._results
+    def _get_design_elements(self, runidx):
+        # events
+        run_event_path = self.inputs.paths["events"][runidx]
+        run_events = self._load_events(run_event_path)
+
+        # get motion_params
+        condf, conf_names = self._build_confound_matrix(runidx)
+
+        # get censoring
+        spike_arr = self._fwd_censoring(runidx, discard_thresh=0.5)
+        if spike_arr is None:
+            return None  # Too many spikes, skip this run
+
+        conf_names.extend([f"spike_{i}" for i in range(spike_arr.shape[1])])
+        confounds = np.concatenate((condf, spike_arr), axis=1)
+        confounds = np.nan_to_num(confounds)
+
+        # get gaze coding
+        if self.inputs.gaze_coding:
+            tags, tag_names = self._get_gaze_events()
+
+            confounds = np.concatenate((confounds, tags), axis=1)
+            conf_names.extend(tag_names)
+
+        return run_events, confounds, conf_names
 
     def _check_path_dict(self):
         if not isinstance(self.inputs.paths, dict):
@@ -248,45 +300,23 @@ class GLMDesign(BaseInterface):
         raise NotImplementedError(
             "Gaze coding is not implemented yet. Please implement the _get_gaze_events method. Must read 'camera' paths during GLMPathSetter._get_fnames()"
         )
+        # Example code from previous implementation
+        tags = pd.read_csv(paths["camera"][runidx], sep="\t")
+        tag_names = tags.columns.to_list()
+        return tags, tag_names
 
-    def _get_video_tag_events(self):
+    def _get_video_tag_events(self, events_df):
         if not path.exists(self.inputs.video_tag_path):
             raise ValueError(
                 f"Video tag file not found: {self.inputs.video_tag_path}. Please provide a valid path."
             )
 
-    def _get_exemplar_events(self):
-        pass
-
-    def _get_repetition_events(self):
-        pass
-
-    def _build_confound_matrix(self):
-        pass
-
-    def _fwd_censoring(self):
-        pass
-
-
-## BROKEN ##
-class GLMAnalysis(GLMPathSetter):
-    def __init__(
-        self,
-        base_dir,
-        func_deriv,
-        sub,
-        task,
-        brain_mask="",
-        motion_param_deriv="motion_parameters",
-        fwd_deriv="motion_fwd",
-    ):
-        super().__init__(
-            base_dir, func_deriv, sub, task, brain_mask, motion_param_deriv, fwd_deriv
+        raise NotImplementedError(
+            "Video tag marking is not implemented yet. Please implement the _get_video_tag_events method."
         )
-        self._get_fnames()
 
-    def _get_elan_tags(event_df):
-        elan_tags = pd.read_pickle("events_per_movie_longlist_new.pickle")
+        # below is an example from previous code
+        elan_tags = pd.read_pickle(self.inputs.video_tag_path)
         chosen_trials = ["faces"]  # ,'body_parts','scene','tools']
         # chosen_movies = ['dog','moana','minions_supermarket','forest','bathsong','new_orleans']
         elan_tags = {k.replace(".mp4", ""): v for k, v in elan_tags.items()}
@@ -295,12 +325,12 @@ class GLMAnalysis(GLMPathSetter):
         }
 
         elan = []
-        for trial in event_df["trial_type"]:
+        for trial in events_df["trial_type"]:
             if trial not in elan_tags.keys():
-                elan.append(event_df[event_df["trial_type"] == trial])
+                elan.append(events_df[events_df["trial_type"] == trial])
                 continue
             elans = elan_tags[trial]
-            video_onset = np.array(event_df[event_df["trial_type"] == trial]["onset"])
+            video_onset = np.array(events_df[events_df["trial_type"] == trial]["onset"])
             for onset in video_onset:
                 adjusted_elans = elans.copy()
                 adjusted_elans.loc[:, "onset"] = adjusted_elans.loc[:, "onset"] + onset
@@ -310,185 +340,202 @@ class GLMAnalysis(GLMPathSetter):
         elan_df.sort_values(by=["onset"], inplace=True, ignore_index=True)
         return elan_df
 
-    def model_run(
-        self,
-        recorded_tr=0.610,
-        brain_mask="/foundcog/templates/mask/nihpd_asym_02-05_fcgmask_2mm.nii.gz",
-        fwd_cutoff=0.5,
-        rep_marking=True,
-        exemplar_marking=False,
-        derivs="normalized_to_common_space",
-        vid_tags=False,
-    ):
+    def _load_events(self, event_path):
+        events_df = pd.read_csv(event_path, sep="\t")
+        trial_types = events_df["trial_type"].unique()
 
-        _rep_tag = "_reps" if rep_marking and self.task == "pictures" else ""
-        _eg_tag = "_eg" if exemplar_marking and self.task == "pictures" else ""
+        if np.any(["." in i for i in trial_types]):
+            from pathlib import Path
 
-        # load events first
-        events = [pd.read_csv(ev, sep="\t") for ev in self.paths["events"]]
+            events_df["trial_type"] = [Path(i).stem for i in events_df["trial_type"]]
+        events_df["trial_type"] = events_df["trial_type"].str.replace("_", "")
 
-        outpaths = []
-        skipruns = []
-        for runidx in range(len(events)):
-            # Get the functional image for this run
-            run_img = self.paths["func"][runidx]
+        implicit_baseline = (
+            "fixation" if "fixation" in trial_types else "attention_getter"
+        )
+        events_df = events_df[
+            events_df["trial_type"] != implicit_baseline
+        ]  # remove implicit baseline
 
-            # get which ses/run we're in
-            runnum = self.paths["run_order"][runidx]
-            sesnum = self.paths["ses_order"][runidx]
+        if self.inputs.video_tag_marking:
+            events_df = self._get_video_tag_events()
 
-            # BUILD CONFOUNDS - do this first to check if run passes motion threshold
-            condf = pd.read_csv(
-                self.paths["motion"][runidx], header=None, sep="  ", engine="python"
-            )
-            conf_names = [
-                "motion_x",
-                "motion_y",
-                "motion_z",
-                "rotation_x",
-                "rotation_y",
-                "rotation_z",
-            ]
+        if self.inputs.exemplar_marking:
+            events_df = self._get_exemplar_events(events_df)
 
-            # Construct spike regressors for this participant
-            # 1. Read in the FWD file
-            fwd = pd.read_csv(self.paths["fwd"][runidx])
+        if self.inputs.repetition_marking:
+            events_df = self._get_repetition_events(events_df)
 
-            # 2. Get indices where this is over cutoff
-            # #   Be careful of whether setting 1st or 2nd scan of difference
-            # THIS IS FIRST SCAN
-            above_idxs = fwd.index[fwd["FramewiseDisplacement"] > fwd_cutoff].values
+        return events_df
 
-            # THIS WOULD BE SECOND SCAN
-            # above_idxs = above_idxs + 1
+    def _get_exemplar_events(self, events_df):
+        from pathlib import Path
 
-            # 3. Construct matrix with nrows=nscans, ncols=nframes_todrop
-            spike_arr = np.zeros((len(fwd) + 1, above_idxs.size))
-            spike_arr[above_idxs, np.arange(above_idxs.size)] = 1
+        individual_stimuli = [Path(i).stem for i in events_df["stim_file"]]
+        individual_stimuli = [i.replace("_", "") for i in individual_stimuli]
+        events_df["trial_type"] = individual_stimuli
 
-            if spike_arr.shape[1] > 0:
-                conf_names.extend([f"spike_{i}" for i in range(spike_arr.shape[1])])
+        return events_df
 
-            # Add spike regressors along axis 1 of condf array
-            confounds = np.concatenate((condf, spike_arr), axis=1)
-            confounds = np.nan_to_num(confounds)
+    def _get_repetition_events(self, events_df, design_nreps=2):
+        import math
+        from collections import defaultdict
 
-            # Check to see if number of spikes is over threshold
-            discard_thresh = 0.5
-            if len(above_idxs) > len(fwd) * discard_thresh:
-                print(
-                    f"Too much motion in sub-{self.sub} run {runidx+1} of {len(events)}, skipping"
-                )
-                skipruns.append({"ses": sesnum, "run": runnum, "reason": "motion"})
+        # Count how many times each trial_type appears
+        counts = events_df["trial_type"].value_counts()
+
+        # Calculate exemplars per trial type based on expected repetitions
+        num_exemplars_per_type = (counts / design_nreps).astype(int)
+
+        # Track how many times we've seen each trial type
+        tracker = defaultdict(int)
+        marked_tts = []
+
+        for trial in events_df["trial_type"]:
+            if ("attention" in trial) or ("AG" in trial):  # warning, hard coded
+                # Skip attention getters
+                marked_tts.append(trial)
                 continue
+            tracker[trial] += 1
+            exemplar_count = num_exemplars_per_type[trial]
+            rep_num = math.ceil(tracker[trial] / exemplar_count)
+            marked_tts.append(f"{trial}_rep{rep_num}")
 
-            # tags = pd.read_csv(paths['camera'][runidx], sep='\t')
-            # confounds = np.concatenate((confounds, tags), axis=1)
-            # conf_names.extend(tags.columns.to_list())
+        events_df["trial_type"] = marked_tts
 
-            # initialise the model
-            model = FirstLevelModel(t_r=recorded_tr, mask_img=brain_mask)
+        return events_df
 
-            run_events = events[runidx]
-            # relevant for video trials
-            run_events["trial_type"] = run_events["trial_type"].str.replace(".mp4", "")
+    def _build_confound_matrix(self, runidx):
+        # BUILD CONFOUNDS - do this first to check if run passes motion threshold
+        condf = pd.read_csv(
+            self.inputs.paths["motion"][runidx], header=None, sep="  ", engine="python"
+        )
+        conf_names = [
+            "motion_x",
+            "motion_y",
+            "motion_z",
+            "rotation_x",
+            "rotation_y",
+            "rotation_z",
+        ]
 
-            if vid_tags:
-                if self.task != "videos":
-                    raise ValueError("vid_tags=True only works for videos")
-                run_events = self._get_elan_tags(run_events)
+        return condf.values, conf_names
 
-            # use fixation as baseline if it's there (i.e. for pictures) else use the attention getters (for videos)
-            if "fixation" in run_events["trial_type"].to_list():
-                run_events = run_events[run_events["trial_type"] != "fixation"]
-            else:
-                run_events = run_events[run_events["trial_type"] != "attention_getter"]
+    def _fwd_censoring(self, runidx, discard_thresh=0.5):
+        # Construct spike regressors for this participant
+        # 1. Read in the FWD file
+        fwd = pd.read_csv(self.inputs.paths["fwd"][runidx])
 
-            # remove underscores for easier string slicing down the line
-            run_events["trial_type"] = run_events["trial_type"].str.replace("_", "")
+        # 2. Get indices where this is over cutoff
+        # #   Be careful of whether setting 1st or 2nd scan of difference
+        # THIS IS FIRST SCAN
+        above_idxs = fwd.index[
+            fwd["FramewiseDisplacement"] > self.inputs.fwd_cutoff
+        ].values
 
-            # mark individual exemplars
-            if exemplar_marking and "picture" in self.task:
-                run_events["stim_file"] = (
-                    run_events["stim_file"].str.replace(".png", "").str.replace("_", "")
-                )
-                run_events.loc[1:, "trial_type"] = run_events.loc[1:, "stim_file"]
+        # THIS WOULD BE SECOND SCAN
+        # above_idxs = above_idxs + 1
 
-            # mark repetitions
-            if rep_marking:
-                if exemplar_marking:
-                    numexemplar = 1
-                else:
-                    numexemplar = 3 if "picture" in self.task else 1
-                tts = run_events.trial_type.to_list()
-                dd = defaultdict(int)
-                marked_tts = []
-                for trial in tts:
-                    dd[trial] += 1
-                    if dd[trial] <= numexemplar:
-                        marked_tts.append(f"{trial}_rep1")
-                    else:
-                        marked_tts.append(f"{trial}_rep2")
-                run_events["trial_type"] = marked_tts
+        # 3. Construct matrix with nrows=nscans, ncols=nframes_todrop
+        spike_arr = np.zeros((len(fwd) + 1, above_idxs.size))
+        spike_arr[above_idxs, np.arange(above_idxs.size)] = 1
 
-            # BUILD FRAME TIMES - code snippet taken from nilearn
-            n_scans = get_data(run_img).shape[3]
-            start_time = model.slice_time_ref * model.t_r
-            end_time = (n_scans - 1 + model.slice_time_ref) * model.t_r
-            frame_times = np.linspace(start_time, end_time, n_scans)
+        if len(above_idxs) > len(fwd) * discard_thresh:
+            return None  # Too many spikes, skip this run
+        else:
+            return spike_arr
 
-            # MAKE DESIGN MATRIX
-            design = make_first_level_design_matrix(
-                frame_times,
-                events=run_events,
-                hrf_model=model.hrf_model,
-                drift_model=model.drift_model,
-                high_pass=model.high_pass,
-                drift_order=model.drift_order,
-                fir_delays=model.fir_delays,
-                add_regs=confounds,
-                add_reg_names=conf_names,
-                min_onset=model.min_onset,
+
+class GLMRunInputSpec(BaseInterfaceInputSpec):
+    design_elements_perrun = traits.Dict(
+        mandatory=True,
+        desc="Design elements for each run, including functional paths, events, confounds, and confound names",
+    )
+    sub = traits.Str(mandatory=True, desc="Subject identifier for the GLM run")
+    task = traits.Str(mandatory=True, desc="Task identifier for the GLM run")
+
+    tr = traits.Float(
+        mandatory=True, desc="Repetition time (TR) in seconds for the GLM run"
+    )
+    brain_mask = traits.Str(
+        mandatory=True, desc="Path to the brain mask image for the GLM run"
+    )
+
+
+class GLMRunOutputSpec(TraitedSpec):
+    fit_models_perrun = traits.Dict(
+        desc="Fitted models for each run, including design matrices and model objects"
+    )
+
+
+class GLMRun(BaseInterface):
+    input_spec = GLMRunInputSpec
+    output_spec = GLMRunOutputSpec
+
+    def _run_interface(self, runtime):
+
+        self._results = {}
+
+        nruns = len(self.inputs.design_elements_perrun["events"])
+
+        fit_models_perrun = {"design_matrices": [], "models": []}
+        for runidx in range(nruns):
+            run_func_img = self.inputs.design_elements_perrun["func_paths"][runidx]
+            run_events = self.inputs.design_elements_perrun["events"][runidx]
+            run_confounds = self.inputs.design_elements_perrun["confounds"][runidx]
+            run_conf_names = self.inputs.design_elements_perrun["conf_names"][runidx]
+            design, model = self._fit_glm(
+                run_func_img, run_events, run_confounds, run_conf_names
             )
+            fit_models_perrun["design_matrices"].append(design)
+            fit_models_perrun["models"].append(model)
 
-            fit = True  # only purpose of this switch is for testing
-            if fit:
-                # get the functional image
-                run_img_loaded = check_niimg(run_img, ensure_ndim=4)
+        fit_models_perrun["func_paths"] = self.inputs.design_elements_perrun[
+            "func_paths"
+        ]
+        fit_models_perrun["events"] = self.inputs.design_elements_perrun["events"]
+        fit_models_perrun["run_order"] = self.inputs.design_elements_perrun["run_order"]
+        fit_models_perrun["ses_order"] = self.inputs.design_elements_perrun["ses_order"]
 
-                # fit the model
-                model.fit(run_img_loaded, design_matrices=design)
+        self._results["fit_models_perrun"] = fit_models_perrun
+        return runtime
 
-                # save out the inputs to the model alongside it
-                model_save = {
-                    "model": model,
-                    "input_events": run_events,
-                    "funcfile": run_img,
-                    "fwdcutoff": fwd_cutoff,
-                    "rep_marking": rep_marking,
-                    "exemplar_marking": exemplar_marking,
-                }
+    def _list_outputs(self):
+        return self._results
 
-                model_path = os.path.abspath(
-                    f"sub-{sub}_ses-{sesnum}_task-{task}_run-{runnum}{_eg_tag}{_rep_tag}_elantags_model.pickle"
-                )
-                # model_path = os.path.join('/foundcog/foundcog_results/elanmodels',f'sub-{self.sub}_ses-{sesnum}_task-{self.task}_run-{runnum}{_eg_tag}{_rep_tag}_elantags_model.pickle')
-                with open(model_path, "wb") as f:
-                    pickle.dump(model_save, f)
-                outpaths.append(model_path)
+    def _fit_glm(self, func_img, events, confounds, conf_names):
 
-        # save out the skipped runs
-        skippath = []
-        if len(skipruns) > 0:
-            skipruns = pd.DataFrame(skipruns)
-            skip_path = os.path.abspath(
-                f"sub-{sub}_task-{task}{_eg_tag}{_rep_tag}_skippedruns.csv"
-            )
-            # skip_path = os.path.join('/foundcog/foundcog_results/elanmodels',f'sub-{self.sub}_task-{self.task}{_eg_tag}{_rep_tag}_skippedruns.csv')
-            skipruns.to_csv(skip_path, index=False)
-            skippath.append(skip_path)
+        model = FirstLevelModel(
+            t_r=self.inputs.tr,
+            mask_img=self.inputs.brain_mask,
+            # all other nilearn defaults
+        )
 
-        return outpaths, skippath, rep_marking, exemplar_marking
+        # BUILD FRAME TIMES - code snippet taken from nilearn
+        n_scans = get_data(func_img).shape[3]
+        start_time = model.slice_time_ref * model.t_r
+        end_time = (n_scans - 1 + model.slice_time_ref) * model.t_r
+        frame_times = np.linspace(start_time, end_time, n_scans)
+
+        ## MAKE DESIGN MATRIX
+        design = make_first_level_design_matrix(
+            frame_times,
+            events=events,
+            hrf_model=model.hrf_model,
+            drift_model=model.drift_model,
+            high_pass=model.high_pass,
+            drift_order=model.drift_order,
+            fir_delays=model.fir_delays,
+            add_regs=confounds,
+            add_reg_names=conf_names,
+            min_onset=model.min_onset,
+        )
+
+        ## Fit the model
+        func_img_loaded = check_niimg(func_img, ensure_ndim=4)
+        model.fit(func_img_loaded, design_matrices=design)
+
+        return design, model
 
 
 def single_sub_betas(sub, task, subrunpaths, rep_marking, exemplar_marking):
@@ -650,14 +697,25 @@ def single_sub_betas(sub, task, subrunpaths, rep_marking, exemplar_marking):
 
 if __name__ == "__main__":
 
-    SUB = "2001"
+    public_dirs = True
+
+    if public_dirs:
+        SUB = "2001"
+        INP_DIR = "/foundcog/dataset_sharing"
+        DERIV_DIR = "derivatives/foundcog_preproc"
+    else:
+        SUB = "ICC103"
+        INP_DIR = "/foundcog/bids"
+        DERIV_DIR = "derivatives"
+
     TASK = "pictures"
 
     from nipype import Node
 
     ## SET PATHS
     glm_paths = Node(GLMPathSetter(), name="glm_path_node")
-    glm_paths.inputs.base_dir = "/foundcog/dataset_sharing"
+    glm_paths.inputs.base_dir = INP_DIR
+    glm_paths.inputs.derivative_dir = DERIV_DIR
     glm_paths.inputs.func_deriv = "normalized_to_common_space"
     glm_paths.inputs.sub = SUB
     glm_paths.inputs.task = TASK
@@ -669,10 +727,6 @@ if __name__ == "__main__":
     glm_design = Node(GLMDesign(), name="glm_design_node")
     glm_design.inputs.sub = SUB
     glm_design.inputs.task = TASK
-    glm_design.inputs.tr = 0.610
-    glm_design.inputs.brain_mask = (
-        "/foundcog/templates/mask/nihpd_asym_02-05_fcgmask_2mm.nii.gz"
-    )
 
     glm_design.inputs.repetition_marking = False
     glm_design.inputs.exemplar_marking = True
@@ -682,4 +736,14 @@ if __name__ == "__main__":
     glm_design.inputs.paths = paths
 
     design_output = glm_design.run()
+
+    glm_run = Node(GLMRun(), name="glm_run_node")
+    glm_run.inputs.sub = SUB
+    glm_run.inputs.task = TASK
+    glm_run.inputs.tr = 0.610
+    glm_run.inputs.brain_mask = (
+        "/foundcog/templates/mask/nihpd_asym_02-05_fcgmask_2mm.nii.gz"
+    )
+    glm_run.inputs.design_elements_perrun = design_output.outputs.design_elements_perrun
+    glm_run_output = glm_run.run()
     print()

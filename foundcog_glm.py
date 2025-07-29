@@ -1,12 +1,14 @@
 from os import path
-
 import pandas as pd
-from bids.layout import BIDSLayout
-from nipype import config
-from nipype.interfaces.utility import Function, IdentityInterface
-from nipype.pipeline.engine import Node, Workflow
 
-from analysis.glm import GLMPathSetter, GLMAnalysis, single_sub_betas
+from bids.layout import BIDSLayout
+
+from nipype import config
+from nipype.interfaces.utility import IdentityInterface
+from nipype.pipeline.engine import Node, Workflow
+from nipype.interfaces.io import DataSink
+
+from analysis.glm import GLMPathSetter, GLMDesign, GLMRun, single_sub_betas
 
 config.enable_debug_mode()
 
@@ -14,6 +16,8 @@ config.enable_debug_mode()
 
 experiment_dir = path.abspath(path.join("/foundcog", "dataset_sharing"))
 database_path = path.abspath(path.join(experiment_dir, "bidsdatabase"))
+derivs_dir = path.join(
+    "derivatives", "foundcog_preproc") # will be linked with experiment_dir when reading inputs to pipeline
 output_dir = path.join(
     "derivatives", "foundcog_glm"
 )  # will be linked with experiment_dir in DataSink
@@ -62,9 +66,9 @@ for sub in subject_list:
             # Make sure paths in analysis/glm.py are correct
             glm_paths = Node(GLMPathSetter(), name="glm_paths")
             glm_paths.inputs.base_dir = experiment_dir
-            glm_paths.derivatives_dir = path.join(experiment_dir, output_dir)
-            glm_paths.motion_param_deriv = "motion_parameters"  # for 6 motion params
-            glm_paths.fwd_deriv = "motion_fwd"  # for values use in GLM censoring, standard is framewise displacement
+            glm_paths.inputs.derivative_dir = path.join(experiment_dir, derivs_dir)
+            glm_paths.inputs.motion_param_deriv = "motion_parameters"  # for 6 motion params
+            glm_paths.inputs.fwd_deriv = "motion_fwd"  # for values use in GLM censoring, standard is framewise displacement
             glm_paths.inputs.func_deriv = "normalized_to_common_space"  # which functional images to use. E.g. alternative would be "smoothing"
 
             glm_wf.connect(
@@ -72,139 +76,49 @@ for sub in subject_list:
             )
             # this outputs a dict of paths
 
-            ## broken
-            modelrun = Node(
-                Function(
-                    input_names=[
-                        "recorded_tr",
-                        "brain_mask",
-                        "fwd_cutoff",
-                        "rep_marking",
-                        "exemplar_marking",
-                    ],
-                    output_names=[
-                        "outpaths",
-                        "skippath",
-                        "rep_marking",
-                        "exemplar_marking",
-                    ],
-                    function=glm_analyser.model_run,
-                ),
-                name="modelrun",
-            )
+            glm_design = Node(GLMDesign(), name="glm_design")
+            ## inputs
+            glm_design.inputs.fwd_cutoff = fwd_cutoff
+            glm_design.inputs.repetition_marking = reps
+            glm_design.inputs.exemplar_marking = eg
+            ## other options
+            # glm_design.inputs.gaze_coding = False
+            # glm_design.inputs.video_tag_marking = False
+            # glm_design.inputs.video_tag_path = "/home/clionaodoherty/foundcog_pipeline/events_per_movie_longlist_new.pickle"
 
-            modelrun.inputs.recorded_tr = TR
-            modelrun.inputs.brain_mask = (
-                "/foundcog/templates/mask/nihpd_asym_08-11_fcgmask_2mm.nii.gz"
-                if sub[0] == "9"
-                else "/foundcog/templates/mask/nihpd_asym_02-05_fcgmask_2mm.nii.gz"
-            )
-            modelrun.inputs.fwd_cutoff = fwd_cutoff
-
-            modelrun.inputs.rep_marking = reps
-            modelrun.inputs.exemplar_marking = eg
-
-            # glm.connect([(infosource, modelrun, [('sub','sub'),('task','task')])])
-
-            # build function with mini workflow to save out files where files have been created
-            # using this convention because not all runs will pass through our various thresholds (motion etc.)
-            def model_to_save(outpaths, save_dir, output_dir):
-                from nipype.interfaces.io import DataSink
-
-                # check firstly if there are any runs with model paths saved out
-                if len(outpaths) != 0:
-                    for run in outpaths:
-                        datasink = DataSink(
-                            base_directory=save_dir, container=output_dir
-                        )
-                        datasink.inputs.models = run
-                        datasink.inputs.substitutions = [
-                            ("_sub_", "sub-"),
-                            ("task_", "task-"),
-                        ]
-                        # just do this single threaded as it's within the wider slurm job
-                        datasink.run()
-                else:
-                    print("This subject has no models saved")
-
-            model_tosave = Node(
-                Function(
-                    input_names=["outpaths", "save_dir", "output_dir"],
-                    function=model_to_save,
-                ),
-                name="model_tosave",
-            )
-            model_tosave.inputs.save_dir = experiment_dir
-            model_tosave.inputs.output_dir = output_dir
-
-            glm.connect([(modelrun, model_tosave, [("outpaths", "outpaths")])])
-
-            # save out matrix of betas for this participant
-            # need to get input into subbetas from outpaths of modelrun
-            subbetas = Node(
-                Function(
-                    input_names=[
-                        "sub",
-                        "task",
-                        "subrunpaths",
-                        "rep_marking",
-                        "exemplar_marking",
-                    ],
-                    output_names=["outpaths"],
-                    function=single_sub_betas,
-                ),
-                name="subbetas",
-            )
-
-            glm.connect([(infosource, subbetas, [("sub", "sub"), ("task", "task")])])
-            glm.connect([(modelrun, subbetas, [("outpaths", "subrunpaths")])])
-            glm.connect(
+            glm_wf.connect(
                 [
-                    (
-                        modelrun,
-                        subbetas,
-                        [
-                            ("rep_marking", "rep_marking"),
-                            ("exemplar_marking", "exemplar_marking"),
-                        ],
-                    )
+                    (glm_paths, glm_design, [("paths", "paths")]),
+                    (infosource, glm_design, [("sub", "sub"), ("task", "task")]),
                 ]
             )
 
-            # saving betas now
-            def beta_to_save(outpaths, save_dir, output_dir):
-                from nipype.interfaces.io import DataSink
-                from nipype.pipeline.engine import Node
-
-                # check firstly if there are any runs with model paths saved out
-                if len(outpaths) != 0:
-                    for run in outpaths:
-                        datasink = DataSink(
-                            base_directory=save_dir, container=output_dir
-                        )
-                        datasink.inputs.betas = run
-                        datasink.inputs.substitutions = [
-                            ("_sub_", "sub-"),
-                            ("task_", "task-"),
-                        ]
-                        # just do this single threaded as it's within the wider slurm job
-                        datasink.run()
-                else:
-                    print("This subject has no betas saved")
-
-            beta_tosave = Node(
-                Function(
-                    input_names=["outpaths", "save_dir", "output_dir"],
-                    function=beta_to_save,
-                ),
-                name="beta_tosave",
+            glm_run = Node(GLMRun(), name="glm_run")
+            glm_run.inputs.tr = TR
+            glm_run.inputs.brain_mask = (
+                "/foundcog/templates/mask/nihpd_asym_02-05_fcgmask_2mm.nii.gz"
             )
-            beta_tosave.inputs.save_dir = experiment_dir
-            beta_tosave.inputs.output_dir = output_dir
 
-            glm.connect([(subbetas, beta_tosave, [("outpaths", "outpaths")])])
-
-            # glm.run()
-            glm.run(
-                plugin="SLURMGraph", plugin_args={"dont_resubmit_completed_jobs": False}
+            glm_wf.connect(
+                [
+                    (
+                        glm_design,
+                        glm_run,
+                        [("design_elements_perrun", "design_elements_perrun")],
+                    ),
+                    (infosource, glm_run, [("sub", "sub"), ("task", "task")]),
+                ]
             )
+
+            datasink = Node(DataSink(), name="datasink")
+            datasink.inputs.base_directory = experiment_dir
+            datasink.inputs.container = output_dir
+
+            glm_wf.connect([(glm_run, datasink, [("fit_models_perrun", "models")])])
+
+            glm_wf.run()
+
+
+            # glm_wf.run(
+            #     plugin="SLURMGraph", plugin_args={"dont_resubmit_completed_jobs": False}
+            # )
