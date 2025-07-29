@@ -22,7 +22,7 @@ from nipype.interfaces.base import (
 )
 
 
-class GLMInputSpec(BaseInterfaceInputSpec):
+class GLMPathsInputSpec(BaseInterfaceInputSpec):
     base_dir = traits.Str(mandatory=True, desc="Base directory for the analysis")
     func_deriv = traits.Str(mandatory=True, desc="Functional derivative directory")
     sub = traits.Str(mandatory=True, desc="Subject identifier")
@@ -44,7 +44,7 @@ class GLMInputSpec(BaseInterfaceInputSpec):
     )
 
 
-class GLMOutputSpec(TraitedSpec):
+class GLMPathsOutputSpec(TraitedSpec):
     paths = traits.Dict(
         desc="Paths to the functional images, events, motion parameters, and FWD files"
     )
@@ -52,8 +52,8 @@ class GLMOutputSpec(TraitedSpec):
 
 class GLMPathSetter(BaseInterface):
 
-    input_spec = GLMInputSpec
-    output_spec = GLMOutputSpec
+    input_spec = GLMPathsInputSpec
+    output_spec = GLMPathsOutputSpec
 
     def _run_interface(self, runtime):
         self._results = {}
@@ -156,6 +156,116 @@ class GLMPathSetter(BaseInterface):
                     paths[key] = value.copy()  # Use copy() to avoid aliasing
 
         return paths
+
+
+class GLMDesignInputSpec(BaseInterfaceInputSpec):
+    paths = traits.Dict(
+        mandatory=True,
+        desc="Paths to the files necessary for GLM analysis. This should include all runs for this participant and task.",
+    )
+    sub = traits.Str(mandatory=True, desc="Subject identifier")
+    task = traits.Str(mandatory=True, desc="Task identifier")
+    tr = traits.Float(mandatory=True, desc="Repetition time (TR) in seconds")
+    brain_mask = traits.Str(mandatory=True, desc="Path to the brain mask image")
+
+    repetition_marking = traits.Bool(
+        default_value=False,
+        usedefault=True,
+        desc="Whether to mark repetitions in the design matrix",
+    )
+    exemplar_marking = traits.Bool(
+        default_value=False,
+        usedefault=True,
+        desc="Whether to mark individual exemplars in the design matrix",
+    )
+    gaze_coding = traits.Bool(
+        default_value=False,
+        usedefault=True,
+        desc="Whether to include tags from the MRI camera recordings in the design matrix",
+    )
+    video_tag_marking = traits.Bool(
+        default_value=False,
+        usedefault=True,
+        desc="Whether to include video tags from stimulus design in the design matrix",
+    )
+    video_tag_path = traits.Str(
+        default_value="events_per_movie_longlist_new.pickle",
+        usedefault=True,
+        desc="Path to the video tags file for video tag marking",
+    )
+
+
+class GLMDesignOutputSpec(TraitedSpec):
+    hold = traits.Dict(desc="Placeholder dict")
+
+
+class GLMDesign(BaseInterface):
+    input_spec = GLMDesignInputSpec
+    output_spec = GLMDesignOutputSpec
+
+    def _run_interface(self, runtime):
+        self._results = {}
+
+        self._check_path_dict()
+
+        if not (self.inputs.repetition_marking) and not (self.inputs.exemplar_marking):
+            print(
+                "Neither repetition marking nor exemplar marking is set. No repetitions or exemplars will be marked in the design matrix."
+            )
+
+        if (self.inputs.exemplar_marking) and (self.inputs.task != "pictures"):
+            raise ValueError(
+                "Exemplar marking is only applicable for the 'pictures' task."
+            )
+
+        if self.inputs.video_tag_marking:
+            if self.inputs.task != "videos":
+                raise ValueError(
+                    "Video tag marking is only applicable for the 'videos' task."
+                )
+
+        ## do stuff
+
+        self._results["hold"] = {}
+        return runtime
+
+    def _list_outputs(self):
+        return self._results
+
+    def _check_path_dict(self):
+        if not isinstance(self.inputs.paths, dict):
+            raise ValueError("Paths must be a dictionary containing file paths.")
+
+        required_keys = ["func", "events", "motion", "fwd", "run_order", "ses_order"]
+        for key in required_keys:
+            if key not in self.inputs.paths:
+                raise ValueError(f"Missing required key in paths: {key}")
+
+        if (self.inputs.gaze_coding) and ("camera" not in self.inputs.paths):
+            raise ValueError("MRI Camera events are required for gaze coding.")
+
+    def _get_gaze_events(self):
+        raise NotImplementedError(
+            "Gaze coding is not implemented yet. Please implement the _get_gaze_events method. Must read 'camera' paths during GLMPathSetter._get_fnames()"
+        )
+
+    def _get_video_tag_events(self):
+        if not path.exists(self.inputs.video_tag_path):
+            raise ValueError(
+                f"Video tag file not found: {self.inputs.video_tag_path}. Please provide a valid path."
+            )
+
+    def _get_exemplar_events(self):
+        pass
+
+    def _get_repetition_events(self):
+        pass
+
+    def _build_confound_matrix(self):
+        pass
+
+    def _fwd_censoring(self):
+        pass
 
 
 ## BROKEN ##
@@ -539,50 +649,37 @@ def single_sub_betas(sub, task, subrunpaths, rep_marking, exemplar_marking):
 
 
 if __name__ == "__main__":
-    import glob
 
-    in_root_path = "/foundcog/dataset_sharing"
-    subject_list = ["2001"]
+    SUB = "2001"
+    TASK = "pictures"
 
     from nipype import Node
 
-    glm_node = Node(GLMPathSetter(), name="glm_path_node")
-    glm_node.inputs.base_dir = "/foundcog/dataset_sharing"
-    glm_node.inputs.func_deriv = "normalized_to_common_space"
-    glm_node.inputs.sub = "2001"
-    glm_node.inputs.task = "pictures"
+    ## SET PATHS
+    glm_paths = Node(GLMPathSetter(), name="glm_path_node")
+    glm_paths.inputs.base_dir = "/foundcog/dataset_sharing"
+    glm_paths.inputs.func_deriv = "normalized_to_common_space"
+    glm_paths.inputs.sub = SUB
+    glm_paths.inputs.task = TASK
 
-    glm_node.run()
+    path_output = glm_paths.run()
+    paths = path_output.outputs.paths
 
-    for sub in subject_list:
-        for task in ["pictures"]:
-            paths = model_run(
-                sub,
-                task,
-                fwd_cutoff=1.5,
-                recorded_tr=0.610,
-                brain_mask="/foundcog/templates/mask/nihpd_asym_02-05_fcgmask_2mm.nii.gz",
-                derivs="normalized_to_common_space",
-                rep_marking=True,
-                exemplar_marking=False,
-            )
-            print(paths)
+    ## GET DESIGN MATRIX
+    glm_design = Node(GLMDesign(), name="glm_design_node")
+    glm_design.inputs.sub = SUB
+    glm_design.inputs.task = TASK
+    glm_design.inputs.tr = 0.610
+    glm_design.inputs.brain_mask = (
+        "/foundcog/templates/mask/nihpd_asym_02-05_fcgmask_2mm.nii.gz"
+    )
 
-    rep_marking = False
-    exemplar_marking = True
-    for sub in subject_list:
-        for task in ["pictures"]:  # ,'videos']:
-            _rep_tag = "_reps" if rep_marking else ""
-            _eg_tag = "_eg" if exemplar_marking else ""
+    glm_design.inputs.repetition_marking = False
+    glm_design.inputs.exemplar_marking = True
+    glm_design.inputs.gaze_coding = False
+    glm_design.inputs.video_tag_marking = False
 
-            subrunpaths = glob.glob(
-                f"/foundcog/foundcog_results/{task}/models/sub-{sub}_task-{task}/*{_eg_tag}{_rep_tag}_model.pickle"
-            )
-            outpaths = single_sub_betas(
-                sub,
-                task,
-                subrunpaths,
-                rep_marking=rep_marking,
-                exemplar_marking=exemplar_marking,
-            )
-            print(outpaths)
+    glm_design.inputs.paths = paths
+
+    design_output = glm_design.run()
+    print()
