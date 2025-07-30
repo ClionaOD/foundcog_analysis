@@ -15,6 +15,7 @@ from nipype.interfaces.base import (
     BaseInterfaceInputSpec,
     TraitedSpec,
     traits,
+    File,
 )
 
 
@@ -141,7 +142,7 @@ class GLMPathSetter(BaseInterface):
             funcpaths = glob.glob(
                 self.func_file.format(sub=self.inputs.sub, task=self.inputs.task)
             )
-        
+
         if len(funcpaths) == 0:
             raise FileNotFoundError(
                 f"No functional images found for subject {self.inputs.sub} and task {self.inputs.task}."
@@ -202,6 +203,9 @@ class GLMDesignInputSpec(BaseInterfaceInputSpec):
 
 class GLMDesignOutputSpec(TraitedSpec):
     design_elements_perrun = traits.Dict(desc="Design elements for each run")
+    design_settings = traits.Dict(
+        desc="Settings used for the design matrix, including task, fwd_cutoff, and marking options"
+    )
 
 
 class GLMDesign(BaseInterface):
@@ -215,6 +219,15 @@ class GLMDesign(BaseInterface):
         self._results = {}
 
         self._check_path_dict()
+
+        design_settings = {
+            'task': self.inputs.task,
+            'fwd_cutoff': self.inputs.fwd_cutoff,
+            'repetition_marking': self.inputs.repetition_marking,
+            'exemplar_marking': self.inputs.exemplar_marking,
+            'gaze_coding': self.inputs.gaze_coding,
+            'video_tag_marking': self.inputs.video_tag_marking,
+        }
 
         if not (self.inputs.repetition_marking) and not (self.inputs.exemplar_marking):
             print(
@@ -256,6 +269,7 @@ class GLMDesign(BaseInterface):
             run_elements["ses_order"].append(self.inputs.paths["ses_order"][runidx])
 
         self._results["design_elements_perrun"] = run_elements
+        self._results["design_settings"] = design_settings
         return runtime
 
     def _get_design_elements(self, runidx):
@@ -451,6 +465,10 @@ class GLMRunInputSpec(BaseInterfaceInputSpec):
         mandatory=True,
         desc="Design elements for each run, including functional paths, events, confounds, and confound names",
     )
+    design_settings = traits.Dict(
+        mandatory=False,
+        desc="Settings used for the design matrix, including task, fwd_cutoff, and marking options",
+    )
     sub = traits.Str(mandatory=True, desc="Subject identifier for the GLM run")
     task = traits.Str(mandatory=True, desc="Task identifier for the GLM run")
 
@@ -461,11 +479,18 @@ class GLMRunInputSpec(BaseInterfaceInputSpec):
         mandatory=True, desc="Path to the brain mask image for the GLM run"
     )
 
+    fit = traits.Bool(
+        default_value=True,
+        usedefault=True,
+        desc="Whether to fit the GLM model. Useful for debugging.",
+    )
+
 
 class GLMRunOutputSpec(TraitedSpec):
     fit_models_perrun = traits.Dict(
         desc="Fitted models for each run, including design matrices and model objects"
     )
+    fit_models_file = File(exists=True, desc="Path to the GLM result file")
 
 
 class GLMRun(BaseInterface):
@@ -478,16 +503,15 @@ class GLMRun(BaseInterface):
 
         nruns = len(self.inputs.design_elements_perrun["events"])
 
-        fit_models_perrun = {"design_matrices": [], "models": []}
+        fit_models_perrun = {"models": []}
         for runidx in range(nruns):
             run_func_img = self.inputs.design_elements_perrun["func_paths"][runidx]
             run_events = self.inputs.design_elements_perrun["events"][runidx]
             run_confounds = self.inputs.design_elements_perrun["confounds"][runidx]
             run_conf_names = self.inputs.design_elements_perrun["conf_names"][runidx]
-            design, model = self._fit_glm(
+            model = self._fit_glm(
                 run_func_img, run_events, run_confounds, run_conf_names
             )
-            fit_models_perrun["design_matrices"].append(design)
             fit_models_perrun["models"].append(model)
 
         fit_models_perrun["func_paths"] = self.inputs.design_elements_perrun[
@@ -496,8 +520,31 @@ class GLMRun(BaseInterface):
         fit_models_perrun["events"] = self.inputs.design_elements_perrun["events"]
         fit_models_perrun["run_order"] = self.inputs.design_elements_perrun["run_order"]
         fit_models_perrun["ses_order"] = self.inputs.design_elements_perrun["ses_order"]
+        fit_models_perrun["design_settings"] = self.inputs.design_settings
 
         self._results["fit_models_perrun"] = fit_models_perrun
+
+        _repetitions = "_repetition" if self.inputs.design_settings.get(
+            "repetition_marking", True
+        ) else ""
+        _exemplars = "_exemplar" if self.inputs.design_settings.get(
+            "exemplar_marking", True
+        ) else ""
+        _gaze = "_gaze" if self.inputs.design_settings.get(
+            "gaze_coding", True
+        ) else ""
+        _video_tags = "_video_tags" if self.inputs.design_settings.get(
+            "video_tag_marking", True
+        ) else ""
+
+        save_file = path.abspath(
+            f"sub-{self.inputs.sub}_task-{self.inputs.task}{_repetitions}{_exemplars}{_gaze}{_video_tags}_models.pickle"
+        )
+        with open(save_file, "wb") as f:
+            pickle.dump(fit_models_perrun, f)
+
+        self._results["fit_models_file"] = save_file
+
         return runtime
 
     def _list_outputs(self):
@@ -532,10 +579,11 @@ class GLMRun(BaseInterface):
         )
 
         ## Fit the model
-        func_img_loaded = check_niimg(func_img, ensure_ndim=4)
-        model.fit(func_img_loaded, design_matrices=design)
+        if self.inputs.fit:
+            func_img_loaded = check_niimg(func_img, ensure_ndim=4)
+            model.fit(func_img_loaded, design_matrices=design)
 
-        return design, model
+        return model
 
 
 def single_sub_betas(sub, task, subrunpaths, rep_marking, exemplar_marking):

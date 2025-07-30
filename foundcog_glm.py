@@ -104,7 +104,8 @@ for sub in subject_list:
                     (
                         glm_design,
                         glm_run,
-                        [("design_elements_perrun", "design_elements_perrun")],
+                        [("design_elements_perrun", "design_elements_perrun"),
+                         ("design_settings", "design_settings")],
                     ),
                     (infosource, glm_run, [("sub", "sub"), ("task", "task")]),
                 ]
@@ -113,8 +114,12 @@ for sub in subject_list:
             datasink = Node(DataSink(), name="datasink")
             datasink.inputs.base_directory = experiment_dir
             datasink.inputs.container = output_dir
+            datasink.inputs.substitutions = [
+                ("_sub_", "sub-"),
+                ("task_", "task-"),
+            ]
 
-            glm_wf.connect([(glm_run, datasink, [("fit_models_perrun", "models")])])
+            glm_wf.connect([(glm_run, datasink, [("fit_models_file", "models")])])
 
             glm_wf.run()
 
