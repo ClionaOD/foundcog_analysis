@@ -8,7 +8,7 @@ from nipype.interfaces.utility import IdentityInterface
 from nipype.pipeline.engine import Node, Workflow
 from nipype.interfaces.io import DataSink
 
-from analysis.glm import GLMPathSetter, GLMDesign, GLMRun, single_sub_betas
+from analysis.glm import GLMExperimentSetter, GLMDesign, GLMRun, GLMBetas
 
 config.enable_debug_mode()
 
@@ -48,8 +48,6 @@ for sub in subject_list:
             if task == "videos" and eg:
                 continue
 
-            model_type = "reps" if reps else "eg"
-
             # NiPype setup
             working_dir = path.join("workingdir", sub)
 
@@ -64,15 +62,15 @@ for sub in subject_list:
 
             # Firstly get the paths for all files we need. This is experiment specific.
             # Make sure paths in analysis/glm.py are correct
-            glm_paths = Node(GLMPathSetter(), name="glm_paths")
-            glm_paths.inputs.base_dir = experiment_dir
-            glm_paths.inputs.derivative_dir = path.join(experiment_dir, derivs_dir)
-            glm_paths.inputs.motion_param_deriv = "motion_parameters"  # for 6 motion params
-            glm_paths.inputs.fwd_deriv = "motion_fwd"  # for values use in GLM censoring, standard is framewise displacement
-            glm_paths.inputs.func_deriv = "normalized_to_common_space"  # which functional images to use. E.g. alternative would be "smoothing"
+            glm_experiment = Node(GLMExperimentSetter(), name="glm_experiment")
+            glm_experiment.inputs.base_dir = experiment_dir
+            glm_experiment.inputs.derivative_dir = path.join(experiment_dir, derivs_dir)
+            glm_experiment.inputs.motion_param_deriv = "motion_parameters"  # for 6 motion params
+            glm_experiment.inputs.fwd_deriv = "motion_fwd"  # for values use in GLM censoring, standard is framewise displacement
+            glm_experiment.inputs.func_deriv = "normalized_to_common_space"  # which functional images to use. E.g. alternative would be "smoothing"
 
             glm_wf.connect(
-                [(infosource, glm_paths, [("sub", "sub"), ("task", "task")])]
+                [(infosource, glm_experiment, [("sub", "sub"), ("task", "task")])]
             )
             # this outputs a dict of paths
 
@@ -88,7 +86,7 @@ for sub in subject_list:
 
             glm_wf.connect(
                 [
-                    (glm_paths, glm_design, [("paths", "paths")]),
+                    (glm_experiment, glm_design, [("paths", "paths")]),
                     (infosource, glm_design, [("sub", "sub"), ("task", "task")]),
                 ]
             )
@@ -120,6 +118,19 @@ for sub in subject_list:
             ]
 
             glm_wf.connect([(glm_run, datasink, [("fit_models_file", "models")])])
+
+            glm_betas = Node(
+                GLMBetas(), name="glm_betas"
+            )
+            glm_wf.connect(
+                [
+                    (glm_run, glm_betas, [("fit_models_perrun", "fit_models_perrun")]),
+                    (glm_experiment, glm_betas, [("conditions", "task_conditions")]),
+                    (infosource, glm_betas, [("sub", "sub"), ("task", "task")]),
+                ]
+            )
+
+            glm_wf.connect([(glm_betas, datasink, [("betas_file", "betas")])])
 
             glm_wf.run()
 
