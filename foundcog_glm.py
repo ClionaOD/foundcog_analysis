@@ -1,6 +1,12 @@
 from os import path
 import pandas as pd
 
+import sys
+# Ensure that the top-level repo dir (which contains 'analysis') is in sys.path
+repo_root = path.abspath(path.dirname(__file__))
+if repo_root not in sys.path:
+    sys.path.insert(0, repo_root)
+
 from bids.layout import BIDSLayout
 
 from nipype import config
@@ -40,7 +46,7 @@ TR = 0.610
 fwd_cutoff = 1.5
 
 for sub in subject_list:
-    if sub != "2001":
+    if sub != "2002":
         continue
 
     for task in ["pictures"]:
@@ -132,9 +138,9 @@ for sub in subject_list:
 
             glm_wf.connect([(glm_betas, datasink, [("betas_file", "betas")])])
 
-            glm_wf.run()
+            # glm_wf.run()
 
 
-            # glm_wf.run(
-            #     plugin="SLURMGraph", plugin_args={"dont_resubmit_completed_jobs": False}
-            # )
+            glm_wf.run(
+                plugin="SLURMGraph", plugin_args={"dont_resubmit_completed_jobs": False}
+            )
