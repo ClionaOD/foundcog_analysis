@@ -1,11 +1,10 @@
-from os import path
 import glob
-
-import os
 import pickle
-
 import numpy as np
 import pandas as pd
+
+from os import path
+
 from nilearn._utils.niimg_conversions import check_niimg
 from nilearn.glm.first_level import FirstLevelModel, make_first_level_design_matrix
 from nilearn.image import get_data
@@ -19,7 +18,7 @@ from nipype.interfaces.base import (
 )
 
 
-class GLMPathsInputSpec(BaseInterfaceInputSpec):
+class GLMExperimentInputSpec(BaseInterfaceInputSpec):
     base_dir = traits.Str(mandatory=True, desc="Base directory for the analysis")
     func_deriv = traits.Str(mandatory=True, desc="Functional derivative directory")
     sub = traits.Str(mandatory=True, desc="Subject identifier")
@@ -41,20 +40,26 @@ class GLMPathsInputSpec(BaseInterfaceInputSpec):
     )
 
 
-class GLMPathsOutputSpec(TraitedSpec):
+class GLMExperimentOutputSpec(TraitedSpec):
     paths = traits.Dict(
         desc="Paths to the functional images, events, motion parameters, and FWD files"
     )
+    conditions = traits.List(
+        traits.Str,
+        desc="List of conditions for the experiment based on the task"
+    )
 
 
-class GLMPathSetter(BaseInterface):
+class GLMExperimentSetter(BaseInterface):
 
-    input_spec = GLMPathsInputSpec
-    output_spec = GLMPathsOutputSpec
+    input_spec = GLMExperimentInputSpec
+    output_spec = GLMExperimentOutputSpec
 
     def _run_interface(self, runtime):
         self._results = {}
         paths = self._get_fnames()
+
+        self._results["conditions"] = self._get_experiment_conditions()
 
         self._results["paths"] = paths
         return runtime
@@ -158,6 +163,37 @@ class GLMPathSetter(BaseInterface):
                     paths[key] = value.copy()  # Use copy() to avoid aliasing
 
         return paths
+    
+    def _get_experiment_conditions(self):
+        # Set the conditions for the experiment based on the task
+        if self.inputs.task == "videos":
+            return [
+                "bathsong",
+                "dog",
+                "neworleans",
+                "minionssupermarket",
+                "forest",
+                "moana",
+            ]
+        elif self.inputs.task == "pictures":
+            return [
+                "seabird",
+                "crab",
+                "dishware",
+                "food",
+                "tree",
+                "squirrel",
+                "rubberduck",
+                "towel",
+                "shelves",
+                "shoppingcart",
+                "cat",
+                "fence",
+            ]
+        else:
+            raise ValueError(
+                f"Task {self.inputs.task} is not implemented. If using own task, please provide explicit paths and conditions in the input specification."
+            )
 
 
 class GLMDesignInputSpec(BaseInterfaceInputSpec):
@@ -585,14 +621,86 @@ class GLMRun(BaseInterface):
 
         return model
 
+class GLMBetasInputSpec(BaseInterfaceInputSpec):
+    sub = traits.Str(
+        mandatory=True, desc="Subject identifier for the GLM betas extraction"
+    )
+    task = traits.Str(
+        mandatory=True, desc="Task identifier for the GLM betas extraction"
+    )
+    fit_models_perrun = traits.Dict(
+        mandatory=True,
+        desc="Fitted models for each run, including design matrices and model objects",
+    )
 
-def single_sub_betas(sub, task, subrunpaths, rep_marking, exemplar_marking):
+    task_conditions = traits.List(
+        traits.Str,
+        mandatory=True,
+        desc="Task conditions to include in the analysis.",
+    )
 
-    def _get_betas(model, colind, cov=None):
-        """
-        Our usual beta extracting code
-        """
-        import numpy as np
+class GLMBetasOutputSpec(TraitedSpec):
+    betas_file = File(
+        exists=True, desc="Path to the file containing voxelwise betas and covariances"
+    )
+    betas_perrun = traits.Dict(
+        desc="Betas for each run, including labels, voxel betas, voxel variances, and covariance"
+    )
+
+class GLMBetas(BaseInterface):
+    input_spec = GLMBetasInputSpec
+    output_spec = GLMBetasOutputSpec
+
+    def _run_interface(self, runtime):
+        self._results = {}
+        
+        models = self.inputs.fit_models_perrun["models"]
+        design_settings = self.inputs.fit_models_perrun["design_settings"]
+        nruns = len(models)
+
+        perrun_results = []
+        for runidx in range(nruns):
+            beta_labels, vol_betas, vol_vcov, cov = self._mvpa_betas(
+                models[runidx]
+            )
+            perrun_results.append({
+                "col_labels": beta_labels,
+                "vol_betas": vol_betas,
+                "vol_vcov": vol_vcov,
+                "cov": cov,
+            })
+        
+        betas_perrun = {"betas_perrun": perrun_results, "ses_order": self.inputs.fit_models_perrun["ses_order"], "run_order": self.inputs.fit_models_perrun["run_order"], "design_settings": self.inputs.fit_models_perrun["design_settings"]}
+        self._results["betas_perrun"] = betas_perrun
+
+
+        _repetitions = "_repetition" if design_settings.get(
+            "repetition_marking", True
+        ) else ""
+        _exemplars = "_exemplar" if design_settings.get(
+            "exemplar_marking", True
+        ) else ""
+        _gaze = "_gaze" if design_settings.get(
+            "gaze_coding", True
+        ) else ""
+        _video_tags = "_video_tags" if design_settings.get(
+            "video_tag_marking", True
+        ) else ""
+
+        save_file = path.abspath(
+            f"sub-{self.inputs.sub}_task-{self.inputs.task}{_repetitions}{_exemplars}{_gaze}{_video_tags}_voxelwise_betas.pickle"
+        )
+        with open(save_file, "wb") as f:
+            pickle.dump(betas_perrun, f)
+
+        self._results["betas_file"] = save_file
+
+        return runtime
+
+    def _list_outputs(self):
+        return self._results
+
+    def _get_betas(self, model, colind, cov=None):
 
         labels = model.labels_[0]
         regression_result = model.results_[0]
@@ -611,25 +719,14 @@ def single_sub_betas(sub, task, subrunpaths, rep_marking, exemplar_marking):
 
         return effect, vcov, cov
 
-    def _mvpa_betas(model_path, all_conds):
-        import numpy as np
-        import pandas as pd
-        import matplotlib.pyplot as plt
-
-        """
-        Function to extract betas from the fmri models for later use in MVPA
-        args:
-            model_path - path to the nilearn FirstLevelModel from which to extract betas
-            all_conds - an ideal list of conditions (in the design matrix) for which to calculate betas
+    def _mvpa_betas(self, model):
+        # Model should be nilearn FirstLevelModel object. Should only have one run.
+        if not isinstance(model, FirstLevelModel):
+            raise ValueError("Model must be a nilearn FirstLevelModel object.")
+        if len(model.labels_) != 1:
+            raise ValueError("Model must have exactly one run.")
         
-        returns:
-            betas - an array(numvert, numconditions) of beta values for the entire brain volume
-            vcov - an array(numvert, numconditions) of variance-covariance values for the entire brain volume
-        """
-        model = pd.read_pickle(model_path)
-        if type(model) == dict:
-            model = model["model"]
-        numvert = len(model.labels_[0])
+        numvox = len(model.labels_[0])
 
         # get columns of interest in design
         cols = model.design_matrices_[0].columns
@@ -638,111 +735,29 @@ def single_sub_betas(sub, task, subrunpaths, rep_marking, exemplar_marking):
         conditions = []
         for c in cols:
             if (
-                (c.split("_")[0] in all_conds)
-                or (c[:-1] in all_conds)
-                or (c.split("_")[0][:-1] in all_conds)
+                (c.split("_")[0] in self.inputs.task_conditions)
+                or (c[:-1] in self.inputs.task_conditions)
+                or (c.split("_")[0][:-1] in self.inputs.task_conditions)
             ):
                 conditions.append(c)
 
         numcond = len(conditions)
 
         # Putting this straight into two numpy arrays so we don't need to convert later
-        vol_betas = np.zeros((numvert, numcond))
-        vol_vcov = np.zeros((numvert, numcond))
+        vol_betas = np.zeros((numvox, numcond))
+        vol_vcov = np.zeros((numvox, numcond))
         cov = None
 
         beta_labels = []
         for ind, trial_type in enumerate(conditions):
             colind = cols.get_loc(trial_type)
             beta_labels.append(trial_type)
-            effect, vcov, cov = _get_betas(model, colind, cov=cov)
+            effect, vcov, cov = self._get_betas(model, colind, cov=cov)
             vol_betas[:, ind] = effect
             vol_vcov[:, ind] = vcov
 
-        # Diagnostics - dump cov to figure
-
-        con = np.zeros((1, cov.shape[0]))
-        fig, ax = plt.subplots(nrows=1, ncols=3, figsize=(15, 5))
-        cov = cov[list(range(numcond + 1)) + [-1], :]
-        cov = cov[:, list(range(numcond + 1)) + [-1]]
-        im = ax[0].imshow(cov)
-        plt.colorbar(im)
-
-        x = np.arange(-2, 2, 0.05)
-        a = np.zeros((numcond + 1, len(x)))
-        for colind in range(numcond + 1):
-            con = np.zeros((1, numcond + 2))
-            con[0, colind] = 1
-            for qind, q in enumerate(x):
-                con[0, -1] = q
-                a[colind, qind] = np.dot(con, np.dot(cov, np.transpose(con)))
-        ax[1].plot(x, a.T)
-
-        # plt.savefig(f'sub-{sub}_task-{task}_covariance{_eg_tag}{_rep_tag}.png')
-        plt.close()
-
-        return (beta_labels, vol_betas, vol_vcov, cov)
-
-    import os
-
-    if len(subrunpaths) == 0:
-        return []
-
-    _rep_tag = "_reps" if rep_marking else ""
-    _eg_tag = "_eg" if exemplar_marking else ""
-
-    outpaths = []
-
-    beta_path = os.path.abspath(
-        f"sub-{sub}_task-{task}_voxelwisebetas_withvcov{_eg_tag}{_rep_tag}.pickle"
-    )
-
-    # used to compare to ideal run
-    if task == "videos":
-        allconds = [
-            "bathsong",
-            "dog",
-            "neworleans",
-            "minionssupermarket",
-            "forest",
-            "moana",
-        ]
-    elif task == "pictures":
-        allconds = [
-            "seabird",
-            "crab",
-            "dishware",
-            "food",
-            "tree",
-            "squirrel",
-            "rubberduck",
-            "towel",
-            "shelves",
-            "shoppingcart",
-            "cat",
-            "fence",
-        ]
-
-    # get each run's beta values and conditions modelled for this run
-    beta_save = {}
-    for run in subrunpaths:
-        _colnames, _runbetas, _runvcov, _runcov = _mvpa_betas(run, allconds)
-        beta_save[os.path.basename(run)] = {
-            "betas": _runbetas,
-            "vcov": _runvcov,
-            "colnames": _colnames,
-            "cov": _runcov,
-        }
-
-    if len(beta_save) > 0:
-        with open(beta_path, "wb") as f:
-            # pickle.dump(beta_save, f)
-            pass
-        outpaths.append(beta_path)
-
-    return outpaths
-
-
+        return beta_labels, vol_betas, vol_vcov, cov
+    
 if __name__ == "__main__":
 
     public_dirs = True
@@ -761,15 +776,16 @@ if __name__ == "__main__":
     from nipype import Node
 
     ## SET PATHS
-    glm_paths = Node(GLMPathSetter(), name="glm_path_node")
-    glm_paths.inputs.base_dir = INP_DIR
-    glm_paths.inputs.derivative_dir = DERIV_DIR
-    glm_paths.inputs.func_deriv = "normalized_to_common_space"
-    glm_paths.inputs.sub = SUB
-    glm_paths.inputs.task = TASK
+    glm_experiment = Node(GLMExperimentSetter(), name="glm_path_node")
+    glm_experiment.inputs.base_dir = INP_DIR
+    glm_experiment.inputs.derivative_dir = DERIV_DIR
+    glm_experiment.inputs.func_deriv = "normalized_to_common_space"
+    glm_experiment.inputs.sub = SUB
+    glm_experiment.inputs.task = TASK
 
-    path_output = glm_paths.run()
+    path_output = glm_experiment.run()
     paths = path_output.outputs.paths
+    conditions = path_output.outputs.conditions
 
     ## GET DESIGN MATRIX
     glm_design = Node(GLMDesign(), name="glm_design_node")
@@ -792,6 +808,16 @@ if __name__ == "__main__":
     glm_run.inputs.brain_mask = (
         "/foundcog/templates/mask/nihpd_asym_02-05_fcgmask_2mm.nii.gz"
     )
+    # #
+    # glm_run.inputs.fit = False  # set to True to fit GLM model
+    # #
     glm_run.inputs.design_elements_perrun = design_output.outputs.design_elements_perrun
+    glm_run.inputs.design_settings = design_output.outputs.design_settings
     glm_run_output = glm_run.run()
-    print()
+
+    glm_betas = Node(GLMBetas(), name="glm_betas_node")
+    glm_betas.inputs.sub = SUB
+    glm_betas.inputs.task = TASK
+    glm_betas.inputs.fit_models_perrun = glm_run_output.outputs.fit_models_perrun
+    glm_betas.inputs.task_conditions = conditions
+    glm_betas_output = glm_betas.run()
