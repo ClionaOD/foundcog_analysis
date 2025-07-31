@@ -31,7 +31,21 @@ output_dir = path.join(
 
 FUNC_DERIVATIVES = "normalized_to_common_space"  # which functional images to use. E.g. alternative would be "smoothing"
 TR = 0.610
-fwd_cutoff = 1.5
+FWD_CUTOFF = 1.5
+
+EXEMPLAR = True  # whether to use exemplar marking
+REPETITIONS = False  # whether to use repetition marking
+
+GAZE = False  # whether to use gaze coding
+VIDEO_TAGS = False  # whether to use video tags
+
+## setup directory
+_exemplar = "_exemplar" if EXEMPLAR else ""
+_repetitions = "_repetitions" if REPETITIONS else ""
+_gaze = "_gaze" if GAZE else ""
+_video_tags = "_video_tags" if VIDEO_TAGS else ""
+pipeline_param_str = f'{_exemplar}{_repetitions}{_gaze}{_video_tags}'
+
 
 layout = BIDSLayout(experiment_dir, database_path=database_path)
 
@@ -87,100 +101,113 @@ for sub in subject_list:
                     iter_items[sub]["task"].append(str(task))
                     iter_items[sub]["run"].append(str(run))
 
-for sub in subject_list:
+for sub, sub_items in iter_items.items():
+    # NiPype setup
+    working_dir = path.join("workingdir", sub)
 
-    for task in ["pictures"]:
-        for reps, eg in zip([True, False], [False, True]):
-            if task == "videos" and eg:
-                continue
+    glm_wf = Workflow(name="foundcog_glm")
+    glm_wf.base_dir = path.join(experiment_dir, working_dir)
 
-            # NiPype setup
-            working_dir = path.join("workingdir", sub)
+    infosource_sub = Node(IdentityInterface(fields=["sub", "exemplar", "repetitions", "gaze", "video_tags"]), name="infosource_sub")
+    iterable_list = [("sub",[sub])]
+    if EXEMPLAR:
+        iterable_list.append(("exemplar", [""]))
+    if REPETITIONS:
+        iterable_list.append(("repetitions", [""]))
+    if GAZE:
+        iterable_list.append(("gaze", [""]))
+    if VIDEO_TAGS:
+        iterable_list.append(("video_tags", [""]))
+    infosource_sub.iterables = iterable_list
 
-            glm_wf = Workflow(name="foundcog_glm")
-            glm_wf.base_dir = path.join(experiment_dir, working_dir)
+    infosource = Node(
+        IdentityInterface(fields=["session", "task", "run"]), name="infosource"
+    )
+    infosource.iterables = [
+        ("session", sub_items["ses"]),
+        ("task", sub_items["task"]),
+        ("run", sub_items["run"]),
+    ]
+    infosource.synchronize = (
+        True  # synchronised stepping through each of the iterable lists
+    )
+    glm_wf.connect([(infosource_sub, infosource, [("sub", "sub")])])
 
-            # Infosource - a function free node to iterate over our items
-            infosource = Node(
-                IdentityInterface(fields=["sub", "task"]), name="infosource"
-            )
-            infosource.iterables = [("sub", [sub]), ("task", [task])]
+    # Firstly get the paths for all files we need. This is experiment specific.
+    # Make sure paths in analysis/glm.py are correct
+    glm_experiment = Node(GLMExperimentSetter(), name="glm_experiment")
+    glm_experiment.inputs.base_dir = experiment_dir
+    glm_experiment.inputs.derivative_dir = path.join(experiment_dir, derivs_dir)
+    glm_experiment.inputs.motion_param_deriv = "motion_parameters"  # for 6 motion params
+    glm_experiment.inputs.fwd_deriv = "motion_fwd"  # for values use in GLM censoring, standard is framewise displacement
+    glm_experiment.inputs.func_deriv = FUNC_DERIVATIVES  # which functional images to use. E.g. alternative would be "smoothing"
 
-            # Firstly get the paths for all files we need. This is experiment specific.
-            # Make sure paths in analysis/glm.py are correct
-            glm_experiment = Node(GLMExperimentSetter(), name="glm_experiment")
-            glm_experiment.inputs.base_dir = experiment_dir
-            glm_experiment.inputs.derivative_dir = path.join(experiment_dir, derivs_dir)
-            glm_experiment.inputs.motion_param_deriv = "motion_parameters"  # for 6 motion params
-            glm_experiment.inputs.fwd_deriv = "motion_fwd"  # for values use in GLM censoring, standard is framewise displacement
-            glm_experiment.inputs.func_deriv = FUNC_DERIVATIVES  # which functional images to use. E.g. alternative would be "smoothing"
+    glm_wf.connect([(infosource, glm_experiment, [("sub", "sub"),("task", "task"), ("session", "session"), ("run", "run")])])
 
-            glm_wf.connect(
-                [(infosource, glm_experiment, [("sub", "sub"), ("task", "task")])]
-            )
-            # this outputs a dict of paths
+    glm_design = Node(GLMDesign(), name="glm_design")
+    ## inputs
+    glm_design.inputs.fwd_cutoff = FWD_CUTOFF
+    glm_design.inputs.repetition_marking = REPETITIONS
+    glm_design.inputs.exemplar_marking = EXEMPLAR
+    ## other options
+    # glm_design.inputs.gaze_coding = GAZE
+    # glm_design.inputs.video_tag_marking = VIDEO_TAGS
+    # glm_design.inputs.video_tag_path = "/home/clionaodoherty/foundcog_pipeline/events_per_movie_longlist_new.pickle"
 
-            glm_design = Node(GLMDesign(), name="glm_design")
-            ## inputs
-            glm_design.inputs.fwd_cutoff = fwd_cutoff
-            glm_design.inputs.repetition_marking = reps
-            glm_design.inputs.exemplar_marking = eg
-            ## other options
-            # glm_design.inputs.gaze_coding = False
-            # glm_design.inputs.video_tag_marking = False
-            # glm_design.inputs.video_tag_path = "/home/clionaodoherty/foundcog_pipeline/events_per_movie_longlist_new.pickle"
+    glm_wf.connect(
+        [
+            (glm_experiment, glm_design, [("paths", "paths")]),
+            (infosource, glm_design, [("sub", "sub"), ("task", "task")]),
+        ]
+    )
 
-            glm_wf.connect(
-                [
-                    (glm_experiment, glm_design, [("paths", "paths")]),
-                    (infosource, glm_design, [("sub", "sub"), ("task", "task")]),
-                ]
-            )
+    glm_run = Node(GLMRun(), name="glm_run")
+    glm_run.inputs.tr = TR
+    glm_run.inputs.brain_mask = (
+        "/foundcog/templates/mask/nihpd_asym_02-05_fcgmask_2mm.nii.gz"
+    )
 
-            glm_run = Node(GLMRun(), name="glm_run")
-            glm_run.inputs.tr = TR
-            glm_run.inputs.brain_mask = (
-                "/foundcog/templates/mask/nihpd_asym_02-05_fcgmask_2mm.nii.gz"
-            )
+    glm_wf.connect(
+        [
+            (
+                glm_design,
+                glm_run,
+                [("design_elements_perrun", "design_elements_perrun"),
+                    ("design_settings", "design_settings")],
+            ),
+            (infosource, glm_run, [("sub", "sub"), ("task", "task")]),
+        ]
+    )
 
-            glm_wf.connect(
-                [
-                    (
-                        glm_design,
-                        glm_run,
-                        [("design_elements_perrun", "design_elements_perrun"),
-                         ("design_settings", "design_settings")],
-                    ),
-                    (infosource, glm_run, [("sub", "sub"), ("task", "task")]),
-                ]
-            )
+    datasink = Node(DataSink(), name="datasink")
+    datasink.inputs.base_directory = experiment_dir
+    datasink.inputs.container = output_dir
+    datasink.inputs.substitutions = [
+        ("_sub_", "sub-"),
+        (f"_{pipeline_param_str}", pipeline_param_str),
+    ]
+    datasink.inputs.regexp_substitutions = [
+        (r"_run_(\d+)_session_(\d+)_task_name_([^/]+)", r"ses-\2_run-\1_task-\3"),
+    ]
 
-            datasink = Node(DataSink(), name="datasink")
-            datasink.inputs.base_directory = experiment_dir
-            datasink.inputs.container = output_dir
-            datasink.inputs.substitutions = [
-                ("_sub_", "sub-"),
-                ("task_", "task-"),
-            ]
+    glm_wf.connect([(glm_run, datasink, [("fit_models_file", "models")])])
 
-            glm_wf.connect([(glm_run, datasink, [("fit_models_file", "models")])])
+    glm_betas = Node(
+        GLMBetas(), name="glm_betas"
+    )
+    glm_wf.connect(
+        [
+            (glm_run, glm_betas, [("fit_models_perrun", "fit_models_perrun")]),
+            (glm_experiment, glm_betas, [("conditions", "task_conditions")]),
+            (infosource, glm_betas, [("sub", "sub"), ("task", "task")]),
+        ]
+    )
 
-            glm_betas = Node(
-                GLMBetas(), name="glm_betas"
-            )
-            glm_wf.connect(
-                [
-                    (glm_run, glm_betas, [("fit_models_perrun", "fit_models_perrun")]),
-                    (glm_experiment, glm_betas, [("conditions", "task_conditions")]),
-                    (infosource, glm_betas, [("sub", "sub"), ("task", "task")]),
-                ]
-            )
+    glm_wf.connect([(glm_betas, datasink, [("betas_file", "betas")])])
 
-            glm_wf.connect([(glm_betas, datasink, [("betas_file", "betas")])])
-
-            # glm_wf.run()
+    # glm_wf.run()
 
 
-            glm_wf.run(
-                plugin="SLURMGraph", plugin_args={"dont_resubmit_completed_jobs": False}
-            )
+    glm_wf.run(
+        plugin="SLURMGraph", plugin_args={"dont_resubmit_completed_jobs": False}
+    )
