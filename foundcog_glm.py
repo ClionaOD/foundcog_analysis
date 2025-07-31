@@ -1,11 +1,4 @@
 from os import path
-import pandas as pd
-
-import sys
-# Ensure that the top-level repo dir (which contains 'analysis') is in sys.path
-repo_root = path.abspath(path.dirname(__file__))
-if repo_root not in sys.path:
-    sys.path.insert(0, repo_root)
 
 from bids.layout import BIDSLayout
 
@@ -33,8 +26,8 @@ FUNC_DERIVATIVES = "normalized_to_common_space"  # which functional images to us
 TR = 0.610
 FWD_CUTOFF = 1.5
 
-EXEMPLAR = True  # whether to use exemplar marking
-REPETITIONS = False  # whether to use repetition marking
+EXEMPLAR = False  # whether to use exemplar marking
+REPETITIONS = True  # whether to use repetition marking
 
 GAZE = False  # whether to use gaze coding
 VIDEO_TAGS = False  # whether to use video tags
@@ -68,7 +61,14 @@ subject_list = [i for i in subject_list if not i in exclude_subs]
 subject_list.sort()
 subject_list = ['2001', '2002']
 
+exclude_tasks = ["rest10","rest5"]
+if VIDEO_TAGS:
+    exclude_tasks.append("pictures")
+task_list = [i for i in task_list if not i in exclude_tasks]
+
 print(f"Subjects {subject_list}")
+print(f"Tasks {task_list}")
+
 
 ## Getting values to iterate over for each subject
 iter_items = {}
@@ -108,17 +108,8 @@ for sub, sub_items in iter_items.items():
     glm_wf = Workflow(name="foundcog_glm")
     glm_wf.base_dir = path.join(experiment_dir, working_dir)
 
-    infosource_sub = Node(IdentityInterface(fields=["sub", "exemplar", "repetitions", "gaze", "video_tags"]), name="infosource_sub")
-    iterable_list = [("sub",[sub])]
-    if EXEMPLAR:
-        iterable_list.append(("exemplar", [""]))
-    if REPETITIONS:
-        iterable_list.append(("repetitions", [""]))
-    if GAZE:
-        iterable_list.append(("gaze", [""]))
-    if VIDEO_TAGS:
-        iterable_list.append(("video_tags", [""]))
-    infosource_sub.iterables = iterable_list
+    infosource_sub = Node(IdentityInterface(fields=["sub", "config"]), name="infosource_sub")
+    infosource_sub.iterables = [("sub",[sub]), ("config", [pipeline_param_str[1:]])]  # remove leading underscore
 
     infosource = Node(
         IdentityInterface(fields=["session", "task", "run"]), name="infosource"
@@ -182,12 +173,19 @@ for sub, sub_items in iter_items.items():
     datasink = Node(DataSink(), name="datasink")
     datasink.inputs.base_directory = experiment_dir
     datasink.inputs.container = output_dir
-    datasink.inputs.substitutions = [
-        ("_sub_", "sub-"),
-        (f"_{pipeline_param_str}", pipeline_param_str),
-    ]
+
     datasink.inputs.regexp_substitutions = [
-        (r"_run_(\d+)_session_(\d+)_task_name_([^/]+)", r"ses-\2_run-\1_task-\3"),
+        # Handle empty config: _config__sub_ICC103 → sub-ICC103
+        (r"_config__sub_([\w]+)", r"sub-\1"),
+
+        # General case: _config_repetitions_sub_ICC103 → sub-ICC103/repetitions
+        (r"_config_([\w_]+)_sub_([\w]+)", r"sub-\2/\1"),
+
+        # Session/run/task cleanup
+        (r"_run_(\d+)_session_(\d+)_task_([^/]+)", r"ses-\2_run-\1_task-\3"),
+
+        # Optional: remove stray "/_"
+        (r"/_", r"/"),
     ]
 
     glm_wf.connect([(glm_run, datasink, [("fit_models_file", "models")])])
