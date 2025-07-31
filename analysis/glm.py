@@ -461,6 +461,9 @@ class GLMDesign(BaseInterface):
 
         # Calculate exemplars per trial type based on expected repetitions
         num_exemplars_per_type = (counts / design_nreps).astype(int)
+        # if we get a division by zero, set to 1
+        # this allows for incomplete runs where some trial types may not appear
+        num_exemplars_per_type[num_exemplars_per_type == 0] = 1
 
         # Track how many times we've seen each trial type
         tracker = defaultdict(int)
