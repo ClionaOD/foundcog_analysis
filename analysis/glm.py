@@ -23,6 +23,10 @@ class GLMExperimentInputSpec(BaseInterfaceInputSpec):
     func_deriv = traits.Str(mandatory=True, desc="Functional derivative directory")
     sub = traits.Str(mandatory=True, desc="Subject identifier")
     task = traits.Str(mandatory=True, desc="Task identifier")
+    
+    session = traits.Str(mandatory=False, desc="Session identifier")
+    run = traits.Str(mandatory=False, desc="Run identifier")
+
     motion_param_deriv = traits.Str(
         default_value="motion_parameters",
         usedefault=True,
@@ -57,6 +61,9 @@ class GLMExperimentSetter(BaseInterface):
 
     def _run_interface(self, runtime):
         self._results = {}
+
+        self._infer_run = True if not (self.inputs.run) or not (self.inputs.session) else False
+
         paths = self._get_fnames()
 
         self._results["conditions"] = self._get_experiment_conditions()
@@ -74,17 +81,17 @@ class GLMExperimentSetter(BaseInterface):
             self.inputs.derivative_dir,
             self.inputs.func_deriv,
             "sub-{sub}",
-            "ses-?_run-00?_task-{task}",
+            "ses-{session}_run-{run}_task-{task}",
             # TODO: fix for other filenames
-            "sub-{sub}_ses-?_task-{task}_dir-AP_run-00?_bold_mcf_corrected_flirt.nii.gz",
+            "sub-{sub}_ses-{session}_task-{task}_dir-AP_run-{run}_bold_mcf_corrected_flirt.nii.gz",
         )
 
         self.event_file = path.join(
             self.inputs.base_dir,
             "sub-{sub}",
-            "ses-{sesnum}",
+            "ses-{session}",
             "func",
-            "sub-{sub}_ses-{sesnum}_task-{task}_dir-AP_run-{runnum}_events.tsv",
+            "sub-{sub}_ses-{session}_task-{task}_dir-AP_run-{run}_events.tsv",
         )
 
         self.motion_param_file = path.join(
@@ -92,8 +99,8 @@ class GLMExperimentSetter(BaseInterface):
             self.inputs.derivative_dir,
             self.inputs.motion_param_deriv,
             "sub-{sub}",
-            "ses-{sesnum}_run-{runnum}_task-{task}",
-            "sub-{sub}_ses-{sesnum}_task-{task}_dir-AP_run-{runnum}_bold_mcf.nii.par",
+            "ses-{session}_run-{run}_task-{task}",
+            "sub-{sub}_ses-{session}_task-{task}_dir-AP_run-{run}_bold_mcf.nii.par",
         )
 
         self.fwd_file = path.join(
@@ -101,27 +108,31 @@ class GLMExperimentSetter(BaseInterface):
             self.inputs.derivative_dir,
             self.inputs.fwd_deriv,
             "sub-{sub}",
-            "ses-{sesnum}_run-{runnum}_task-{task}",
+            "ses-{session}_run-{run}_task-{task}",
             "fd_power_2012.txt",
         )
 
     def _match_func_to_datafiles(self, funcrunpath):
-        info = funcrunpath.split("/")[-1].split("_")
-        runnum = [i for i in info if "run" in i][0].split("-")[-1]
-        sesnum = [i for i in info if "ses" in i][0].split("-")[-1]
+        if self._infer_run:
+            info = funcrunpath.split("/")[-1].split("_")
+            runnum = [i for i in info if "run" in i][0].split("-")[-1]
+            sesnum = [i for i in info if "ses" in i][0].split("-")[-1]
+        else:
+            runnum = self.inputs.run
+            sesnum = self.inputs.session
 
         event_file = self.event_file.format(
-            sub=self.inputs.sub, sesnum=sesnum, task=self.inputs.task, runnum=runnum
+            sub=self.inputs.sub, session=sesnum, task=self.inputs.task, run=runnum
         )
         assert path.exists(event_file), f"Event file not found: {event_file}"
         motion_param_file = self.motion_param_file.format(
-            sub=self.inputs.sub, sesnum=sesnum, task=self.inputs.task, runnum=runnum
+            sub=self.inputs.sub, session=sesnum, task=self.inputs.task, run=runnum
         )
         assert path.exists(
             motion_param_file
         ), f"Motion parameter file not found: {motion_param_file}"
         fwd_file = self.fwd_file.format(
-            sub=self.inputs.sub, sesnum=sesnum, task=self.inputs.task, runnum=runnum
+            sub=self.inputs.sub, session=sesnum, task=self.inputs.task, run=runnum
         )
         assert path.exists(fwd_file), f"FWD file not found: {fwd_file}"
         return {
@@ -136,7 +147,12 @@ class GLMExperimentSetter(BaseInterface):
     def _get_fnames(self):
         self._set_expt_paths()
         funcpaths = glob.glob(
-            self.func_file.format(sub=self.inputs.sub, task=self.inputs.task)
+            self.func_file.format(
+                sub=self.inputs.sub,
+                session=self.inputs.session,
+                run=self.inputs.run,
+                task=self.inputs.task
+            )
         )
 
         if len(funcpaths) == 0:
@@ -145,7 +161,12 @@ class GLMExperimentSetter(BaseInterface):
                 "_corrected_flirt.nii.gz", "_flirt.nii.gz"
             )
             funcpaths = glob.glob(
-                self.func_file.format(sub=self.inputs.sub, task=self.inputs.task)
+                self.func_file.format(
+                    sub=self.inputs.sub,
+                    session=self.inputs.session,
+                    run=self.inputs.run,
+                    task=self.inputs.task
+                )
             )
 
         if len(funcpaths) == 0:
@@ -281,6 +302,10 @@ class GLMDesign(BaseInterface):
             )
 
         nruns = len(self.inputs.paths["events"])
+        if nruns > 1:
+            print(
+                f"Multiple runs detected ({nruns}). Extracting design elements for each run separately."
+            )
 
         run_elements = {
             "func_paths": [],
@@ -538,6 +563,10 @@ class GLMRun(BaseInterface):
         self._results = {}
 
         nruns = len(self.inputs.design_elements_perrun["events"])
+        if nruns > 1:
+            print(
+                f"Multiple runs detected ({nruns}). Fitting GLM for each run separately."
+            )
 
         fit_models_perrun = {"models": []}
         for runidx in range(nruns):
@@ -657,6 +686,10 @@ class GLMBetas(BaseInterface):
         models = self.inputs.fit_models_perrun["models"]
         design_settings = self.inputs.fit_models_perrun["design_settings"]
         nruns = len(models)
+        if nruns > 1:
+            print(
+                f"Multiple runs detected ({nruns}). Extracting betas for each run separately."
+            )
 
         perrun_results = []
         for runidx in range(nruns):
@@ -782,6 +815,8 @@ if __name__ == "__main__":
     glm_experiment.inputs.func_deriv = "normalized_to_common_space"
     glm_experiment.inputs.sub = SUB
     glm_experiment.inputs.task = TASK
+    glm_experiment.inputs.session = "1"
+    glm_experiment.inputs.run = "001"
 
     path_output = glm_experiment.run()
     paths = path_output.outputs.paths

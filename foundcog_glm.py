@@ -28,26 +28,66 @@ output_dir = path.join(
     "derivatives", "foundcog_glm"
 )  # will be linked with experiment_dir in DataSink
 
+
+FUNC_DERIVATIVES = "normalized_to_common_space"  # which functional images to use. E.g. alternative would be "smoothing"
+TR = 0.610
+fwd_cutoff = 1.5
+
 layout = BIDSLayout(experiment_dir, database_path=database_path)
 
 # list of subject identifiers
 subject_list = layout.get_subjects()
+task_list = layout.get_tasks()
+session_list = layout.get_sessions()
+run_list = layout.get_runs()
+
+# Painful lession - if these aren't sorted, order varies across runs and causes the whole pipeline to rerun
+subject_list.sort()
+task_list.sort()
+session_list.sort()
+run_list.sort()
 
 ## Exclude 9022 because TRs/syncing messed up
 exclude_subs = ["9022"]
 subject_list = [i for i in subject_list if not i in exclude_subs]
 
 subject_list.sort()
+subject_list = ['2001', '2002']
 
 print(f"Subjects {subject_list}")
 
-# TR as recorded by regression of 's' onset recordings
-TR = 0.610
-fwd_cutoff = 1.5
+## Getting values to iterate over for each subject
+iter_items = {}
+for sub in subject_list:
+    iter_items[sub] = {"ses": [], "task": [], "run": []}
+    for ses in session_list:
+        for task in task_list:
+            for run in run_list:
+                sub_expt_paths = GLMExperimentSetter(
+                    base_dir=experiment_dir,
+                    derivative_dir=derivs_dir,
+                    func_deriv=FUNC_DERIVATIVES,
+                    sub=sub,
+                    task=task,
+                    session=ses,
+                    run=str(run)
+                )
+                sub_expt_paths._set_expt_paths()
+                func_file = sub_expt_paths.func_file
+                
+                info = {
+                    "sub": sub,
+                    "session": ses,
+                    "task": task,
+                    "run": run,
+                }
+                target_file = func_file.format(**info)
+                if path.isfile(path.join(experiment_dir, target_file)):
+                    iter_items[sub]["ses"].append(str(ses))
+                    iter_items[sub]["task"].append(str(task))
+                    iter_items[sub]["run"].append(str(run))
 
 for sub in subject_list:
-    if sub != "2002":
-        continue
 
     for task in ["pictures"]:
         for reps, eg in zip([True, False], [False, True]):
@@ -73,7 +113,7 @@ for sub in subject_list:
             glm_experiment.inputs.derivative_dir = path.join(experiment_dir, derivs_dir)
             glm_experiment.inputs.motion_param_deriv = "motion_parameters"  # for 6 motion params
             glm_experiment.inputs.fwd_deriv = "motion_fwd"  # for values use in GLM censoring, standard is framewise displacement
-            glm_experiment.inputs.func_deriv = "normalized_to_common_space"  # which functional images to use. E.g. alternative would be "smoothing"
+            glm_experiment.inputs.func_deriv = FUNC_DERIVATIVES  # which functional images to use. E.g. alternative would be "smoothing"
 
             glm_wf.connect(
                 [(infosource, glm_experiment, [("sub", "sub"), ("task", "task")])]
