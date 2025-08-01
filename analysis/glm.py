@@ -312,11 +312,6 @@ class GLMDesign(BaseInterface):
                 f"Video tag file not found: {self.inputs.video_tag_path}. Please provide a valid path."
             )
 
-        if (self.inputs.video_tag_marking) and (self.inputs.repetition_marking):
-            raise NotImplementedError(
-                "Video tag marking is not yet compatible with repetition marking."
-            )
-
         nruns = len(self.inputs.paths["events"])
         if nruns > 1:
             print(
@@ -452,8 +447,11 @@ class GLMDesign(BaseInterface):
         if self.inputs.exemplar_marking:
             events_df = self._get_exemplar_events(events_df)
 
-        if self.inputs.repetition_marking:
-            events_df = self._get_repetition_events(events_df)
+        if (self.inputs.repetition_marking):
+            if (self.inputs.video_tag_marking): # eventually, or self.inputs.picturescontext
+                events_df = self._get_odd_even_events(events_df)
+            else: 
+                events_df = self._get_repetition_events(events_df)
 
         return events_df
 
@@ -496,6 +494,16 @@ class GLMDesign(BaseInterface):
         events_df["trial_type"] = marked_tts
 
         return events_df
+    
+    def _get_odd_even_events(self, events_df):
+        new_events_df = events_df.copy()
+        for _, subset_df in events_df.groupby('trial_type'):
+            for count_idx, (idx, row) in enumerate(subset_df.iterrows()):
+                if count_idx % 2 == 0:
+                    new_events_df.loc[idx, 'trial_type'] = '_'.join([row['trial_type'], 'even'])
+                else:
+                    new_events_df.loc[idx, 'trial_type'] = '_'.join([row['trial_type'], 'odd'])
+        return new_events_df
 
     def _build_confound_matrix(self, runidx):
         # BUILD CONFOUNDS - do this first to check if run passes motion threshold

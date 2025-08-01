@@ -35,6 +35,8 @@ GAZE = False  # whether to use gaze coding
 VIDEO_TAGS = False  # whether to use video tags
 TAG_PATH = "/home/clionaodoherty/foundcog_pipeline/events_per_movie_longlist_new.pickle"
 CHOSEN_TAGS = ["faces", "body_parts", "tools"]  # tags
+## IMPORTANT: name this something that pertains to the tags you are using
+TAG_SAVE_NAME = "face-body-tools"  
 
 ## setup directory
 _exemplar = "_exemplar" if EXEMPLAR else ""
@@ -44,6 +46,8 @@ _video_tags = "_video_tags" if VIDEO_TAGS else ""
 pipeline_param_str = f"{_exemplar}{_repetitions}{_gaze}{_video_tags}"
 if pipeline_param_str == "":
     pipeline_param_str = "_default"  # default case if no parameters are set
+if VIDEO_TAGS:
+    pipeline_param_str += f"_{TAG_SAVE_NAME}"  # add tag save name if using video tags. Will fail if not set
 
 
 layout = BIDSLayout(experiment_dir, database_path=database_path)
