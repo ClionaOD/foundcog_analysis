@@ -23,7 +23,7 @@ class GLMExperimentInputSpec(BaseInterfaceInputSpec):
     func_deriv = traits.Str(mandatory=True, desc="Functional derivative directory")
     sub = traits.Str(mandatory=True, desc="Subject identifier")
     task = traits.Str(mandatory=True, desc="Task identifier")
-    
+
     session = traits.Str(mandatory=False, desc="Session identifier")
     run = traits.Str(mandatory=False, desc="Run identifier")
 
@@ -49,8 +49,7 @@ class GLMExperimentOutputSpec(TraitedSpec):
         desc="Paths to the functional images, events, motion parameters, and FWD files"
     )
     conditions = traits.List(
-        traits.Str,
-        desc="List of conditions for the experiment based on the task"
+        traits.Str, desc="List of conditions for the experiment based on the task"
     )
 
 
@@ -62,7 +61,9 @@ class GLMExperimentSetter(BaseInterface):
     def _run_interface(self, runtime):
         self._results = {}
 
-        self._infer_run = True if not (self.inputs.run) or not (self.inputs.session) else False
+        self._infer_run = (
+            True if not (self.inputs.run) or not (self.inputs.session) else False
+        )
 
         paths = self._get_fnames()
 
@@ -151,7 +152,7 @@ class GLMExperimentSetter(BaseInterface):
                 sub=self.inputs.sub,
                 session=self.inputs.session,
                 run=self.inputs.run,
-                task=self.inputs.task
+                task=self.inputs.task,
             )
         )
 
@@ -165,7 +166,7 @@ class GLMExperimentSetter(BaseInterface):
                     sub=self.inputs.sub,
                     session=self.inputs.session,
                     run=self.inputs.run,
-                    task=self.inputs.task
+                    task=self.inputs.task,
                 )
             )
 
@@ -184,7 +185,7 @@ class GLMExperimentSetter(BaseInterface):
                     paths[key] = value.copy()  # Use copy() to avoid aliasing
 
         return paths
-    
+
     def _get_experiment_conditions(self):
         # Set the conditions for the experiment based on the task
         if self.inputs.task == "videos":
@@ -246,6 +247,7 @@ class GLMDesignInputSpec(BaseInterfaceInputSpec):
         usedefault=True,
         desc="Whether to include tags from the MRI camera recordings in the design matrix",
     )
+
     video_tag_marking = traits.Bool(
         default_value=False,
         usedefault=True,
@@ -255,6 +257,10 @@ class GLMDesignInputSpec(BaseInterfaceInputSpec):
         default_value="events_per_movie_longlist_new.pickle",
         usedefault=True,
         desc="Path to the video tags file for video tag marking",
+    )
+    chosen_tags = traits.List(
+        traits.Str(),
+        desc="List of chosen video tags for analysis",
     )
 
 
@@ -278,12 +284,12 @@ class GLMDesign(BaseInterface):
         self._check_path_dict()
 
         design_settings = {
-            'task': self.inputs.task,
-            'fwd_cutoff': self.inputs.fwd_cutoff,
-            'repetition_marking': self.inputs.repetition_marking,
-            'exemplar_marking': self.inputs.exemplar_marking,
-            'gaze_coding': self.inputs.gaze_coding,
-            'video_tag_marking': self.inputs.video_tag_marking,
+            "task": self.inputs.task,
+            "fwd_cutoff": self.inputs.fwd_cutoff,
+            "repetition_marking": self.inputs.repetition_marking,
+            "exemplar_marking": self.inputs.exemplar_marking,
+            "gaze_coding": self.inputs.gaze_coding,
+            "video_tag_marking": self.inputs.video_tag_marking,
         }
 
         if not (self.inputs.repetition_marking) and not (self.inputs.exemplar_marking):
@@ -299,6 +305,16 @@ class GLMDesign(BaseInterface):
         if (self.inputs.video_tag_marking) and (self.inputs.task != "videos"):
             raise ValueError(
                 "Video tag marking is only applicable for the 'videos' task."
+            )
+        
+        if (self.inputs.video_tag_marking) and not path.exists(self.inputs.video_tag_path):
+            raise ValueError(
+                f"Video tag file not found: {self.inputs.video_tag_path}. Please provide a valid path."
+            )
+
+        if (self.inputs.video_tag_marking) and (self.inputs.repetition_marking):
+            raise NotImplementedError(
+                "Video tag marking is not yet compatible with repetition marking."
             )
 
         nruns = len(self.inputs.paths["events"])
@@ -380,40 +396,38 @@ class GLMDesign(BaseInterface):
         tag_names = tags.columns.to_list()
         return tags, tag_names
 
+    def _get_context_events(self, events_df):
+        pass
+
     def _get_video_tag_events(self, events_df):
-        if not path.exists(self.inputs.video_tag_path):
-            raise ValueError(
-                f"Video tag file not found: {self.inputs.video_tag_path}. Please provide a valid path."
-            )
 
-        raise NotImplementedError(
-            "Video tag marking is not implemented yet. Please implement the _get_video_tag_events method."
-        )
-
-        # below is an example from previous code
-        elan_tags = pd.read_pickle(self.inputs.video_tag_path)
-        chosen_trials = ["faces"]  # ,'body_parts','scene','tools']
-        # chosen_movies = ['dog','moana','minions_supermarket','forest','bathsong','new_orleans']
-        elan_tags = {k.replace(".mp4", ""): v for k, v in elan_tags.items()}
-        elan_tags = {
-            k: df[df["trial_type"].isin(chosen_trials)] for k, df in elan_tags.items()
+        video_tags = pd.read_pickle(self.inputs.video_tag_path)
+        video_tags = {k.replace(".mp4", "").replace("_",""): v for k, v in video_tags.items()}
+        video_tags = {
+            k: df[df["trial_type"].isin(self.inputs.chosen_tags)] for k, df in video_tags.items()
         }
 
-        elan = []
-        for trial in events_df["trial_type"]:
-            if trial not in elan_tags.keys():
-                elan.append(events_df[events_df["trial_type"] == trial])
+        new_events = []
+        for _, row in events_df.iterrows():
+            trial_type = row["trial_type"]
+            
+            if trial_type not in video_tags.keys():
+                new_events.append(row.to_frame().T)
                 continue
-            elans = elan_tags[trial]
-            video_onset = np.array(events_df[events_df["trial_type"] == trial]["onset"])
-            for onset in video_onset:
-                adjusted_elans = elans.copy()
-                adjusted_elans.loc[:, "onset"] = adjusted_elans.loc[:, "onset"] + onset
-                elan.append(adjusted_elans)
-        elan_df = pd.concat(elan, ignore_index=True)
-        elan_df.drop(columns=["magnitude"], inplace=True)
-        elan_df.sort_values(by=["onset"], inplace=True, ignore_index=True)
-        return elan_df
+            
+            video_tagged_events = video_tags[trial_type]
+            if video_tagged_events.empty:
+                new_events.append(row.to_frame().T)
+                continue
+            
+            video_onset = row["onset"]
+            adjusted_tagged_events = video_tagged_events.copy()
+            adjusted_tagged_events.loc[:, "onset"] += video_onset
+            new_events.append(adjusted_tagged_events)
+        new_events_df = pd.concat(new_events, ignore_index=True)
+        new_events_df.drop(columns=["magnitude"], inplace=True)
+        new_events_df.sort_values(by=["onset"], inplace=True, ignore_index=True)
+        return new_events_df
 
     def _load_events(self, event_path):
         events_df = pd.read_csv(event_path, sep="\t")
@@ -433,7 +447,7 @@ class GLMDesign(BaseInterface):
         ]  # remove implicit baseline
 
         if self.inputs.video_tag_marking:
-            events_df = self._get_video_tag_events()
+            events_df = self._get_video_tag_events(events_df)
 
         if self.inputs.exemplar_marking:
             events_df = self._get_exemplar_events(events_df)
@@ -592,18 +606,22 @@ class GLMRun(BaseInterface):
 
         self._results["fit_models_perrun"] = fit_models_perrun
 
-        _repetitions = "_repetition" if self.inputs.design_settings.get(
-            "repetition_marking", True
-        ) else ""
-        _exemplars = "_exemplar" if self.inputs.design_settings.get(
-            "exemplar_marking", True
-        ) else ""
-        _gaze = "_gaze" if self.inputs.design_settings.get(
-            "gaze_coding", True
-        ) else ""
-        _video_tags = "_video_tags" if self.inputs.design_settings.get(
-            "video_tag_marking", True
-        ) else ""
+        _repetitions = (
+            "_repetition"
+            if self.inputs.design_settings.get("repetition_marking", True)
+            else ""
+        )
+        _exemplars = (
+            "_exemplar"
+            if self.inputs.design_settings.get("exemplar_marking", True)
+            else ""
+        )
+        _gaze = "_gaze" if self.inputs.design_settings.get("gaze_coding", True) else ""
+        _video_tags = (
+            "_video_tags"
+            if self.inputs.design_settings.get("video_tag_marking", True)
+            else ""
+        )
 
         save_file = path.abspath(
             f"sub-{self.inputs.sub}_task-{self.inputs.task}{_repetitions}{_exemplars}{_gaze}{_video_tags}_models.pickle"
@@ -653,6 +671,7 @@ class GLMRun(BaseInterface):
 
         return model
 
+
 class GLMBetasInputSpec(BaseInterfaceInputSpec):
     sub = traits.Str(
         mandatory=True, desc="Subject identifier for the GLM betas extraction"
@@ -671,6 +690,7 @@ class GLMBetasInputSpec(BaseInterfaceInputSpec):
         desc="Task conditions to include in the analysis.",
     )
 
+
 class GLMBetasOutputSpec(TraitedSpec):
     betas_file = File(
         exists=True, desc="Path to the file containing voxelwise betas and covariances"
@@ -679,13 +699,14 @@ class GLMBetasOutputSpec(TraitedSpec):
         desc="Betas for each run, including labels, voxel betas, voxel variances, and covariance"
     )
 
+
 class GLMBetas(BaseInterface):
     input_spec = GLMBetasInputSpec
     output_spec = GLMBetasOutputSpec
 
     def _run_interface(self, runtime):
         self._results = {}
-        
+
         models = self.inputs.fit_models_perrun["models"]
         design_settings = self.inputs.fit_models_perrun["design_settings"]
         nruns = len(models)
@@ -696,32 +717,34 @@ class GLMBetas(BaseInterface):
 
         perrun_results = []
         for runidx in range(nruns):
-            beta_labels, vol_betas, vol_vcov, cov = self._mvpa_betas(
-                models[runidx]
+            beta_labels, vol_betas, vol_vcov, cov = self._mvpa_betas(models[runidx])
+            perrun_results.append(
+                {
+                    "col_labels": beta_labels,
+                    "vol_betas": vol_betas,
+                    "vol_vcov": vol_vcov,
+                    "cov": cov,
+                }
             )
-            perrun_results.append({
-                "col_labels": beta_labels,
-                "vol_betas": vol_betas,
-                "vol_vcov": vol_vcov,
-                "cov": cov,
-            })
-        
-        betas_perrun = {"betas_perrun": perrun_results, "ses_order": self.inputs.fit_models_perrun["ses_order"], "run_order": self.inputs.fit_models_perrun["run_order"], "design_settings": self.inputs.fit_models_perrun["design_settings"]}
+
+        betas_perrun = {
+            "betas_perrun": perrun_results,
+            "ses_order": self.inputs.fit_models_perrun["ses_order"],
+            "run_order": self.inputs.fit_models_perrun["run_order"],
+            "design_settings": self.inputs.fit_models_perrun["design_settings"],
+        }
         self._results["betas_perrun"] = betas_perrun
 
-
-        _repetitions = "_repetition" if design_settings.get(
-            "repetition_marking", True
-        ) else ""
-        _exemplars = "_exemplar" if design_settings.get(
-            "exemplar_marking", True
-        ) else ""
-        _gaze = "_gaze" if design_settings.get(
-            "gaze_coding", True
-        ) else ""
-        _video_tags = "_video_tags" if design_settings.get(
-            "video_tag_marking", True
-        ) else ""
+        _repetitions = (
+            "_repetition" if design_settings.get("repetition_marking", True) else ""
+        )
+        _exemplars = (
+            "_exemplar" if design_settings.get("exemplar_marking", True) else ""
+        )
+        _gaze = "_gaze" if design_settings.get("gaze_coding", True) else ""
+        _video_tags = (
+            "_video_tags" if design_settings.get("video_tag_marking", True) else ""
+        )
 
         save_file = path.abspath(
             f"sub-{self.inputs.sub}_task-{self.inputs.task}{_repetitions}{_exemplars}{_gaze}{_video_tags}_voxelwise_betas.pickle"
@@ -761,7 +784,7 @@ class GLMBetas(BaseInterface):
             raise ValueError("Model must be a nilearn FirstLevelModel object.")
         if len(model.labels_) != 1:
             raise ValueError("Model must have exactly one run.")
-        
+
         numvox = len(model.labels_[0])
 
         # get columns of interest in design
@@ -793,7 +816,8 @@ class GLMBetas(BaseInterface):
             vol_vcov[:, ind] = vcov
 
         return beta_labels, vol_betas, vol_vcov, cov
-    
+
+
 if __name__ == "__main__":
 
     public_dirs = True

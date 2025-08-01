@@ -31,7 +31,10 @@ EXEMPLAR = False  # whether to use exemplar marking
 REPETITIONS = False  # whether to use repetition marking
 
 GAZE = False  # whether to use gaze coding
+
 VIDEO_TAGS = False  # whether to use video tags
+TAG_PATH = "/home/clionaodoherty/foundcog_pipeline/events_per_movie_longlist_new.pickle"
+CHOSEN_TAGS = ["faces", "body_parts", "tools"]  # tags
 
 ## setup directory
 _exemplar = "_exemplar" if EXEMPLAR else ""
@@ -164,9 +167,11 @@ for sub, sub_items in iter_items.items():
     glm_design.inputs.repetition_marking = REPETITIONS
     glm_design.inputs.exemplar_marking = EXEMPLAR
     ## other options
-    # glm_design.inputs.gaze_coding = GAZE
-    # glm_design.inputs.video_tag_marking = VIDEO_TAGS
-    # glm_design.inputs.video_tag_path = "/home/clionaodoherty/foundcog_pipeline/events_per_movie_longlist_new.pickle"
+    glm_design.inputs.gaze_coding = GAZE
+    
+    glm_design.inputs.video_tag_marking = VIDEO_TAGS
+    glm_design.inputs.video_tag_path = TAG_PATH
+    glm_design.inputs.chosen_tags = CHOSEN_TAGS
 
     glm_wf.connect(
         [
