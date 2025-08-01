@@ -28,22 +28,25 @@ TR = 0.610
 FWD_CUTOFF = 1.5
 
 EXEMPLAR = False  # whether to use exemplar marking
-REPETITIONS = False  # whether to use repetition marking
+REPETITIONS = True  # whether to use repetition marking
 
 GAZE = False  # whether to use gaze coding
 
 VIDEO_TAGS = False  # whether to use video tags
 TAG_PATH = "/home/clionaodoherty/foundcog_pipeline/events_per_movie_longlist_new.pickle"
 CHOSEN_TAGS = ["faces", "body_parts", "tools"]  # tags
-## IMPORTANT: name this something that pertains to the tags you are using
-TAG_SAVE_NAME = "face-body-tools"  
+# IMPORTANT: name this something that pertains to the tags you are using
+TAG_SAVE_NAME = "categoryselectivity"
+
+OBJ_CONTEXT = True
 
 ## setup directory
 _exemplar = "_exemplar" if EXEMPLAR else ""
 _repetitions = "_repetitions" if REPETITIONS else ""
 _gaze = "_gaze" if GAZE else ""
 _video_tags = "_video_tags" if VIDEO_TAGS else ""
-pipeline_param_str = f"{_exemplar}{_repetitions}{_gaze}{_video_tags}"
+_obj_context = "_objascontext" if OBJ_CONTEXT else ""
+pipeline_param_str = f"{_exemplar}{_repetitions}{_gaze}{_video_tags}{_obj_context}"
 if pipeline_param_str == "":
     pipeline_param_str = "_default"  # default case if no parameters are set
 if VIDEO_TAGS:
@@ -177,6 +180,14 @@ for sub, sub_items in iter_items.items():
     glm_design.inputs.video_tag_path = TAG_PATH
     glm_design.inputs.chosen_tags = CHOSEN_TAGS
 
+    glm_design.inputs.objects_as_context = OBJ_CONTEXT
+    if OBJ_CONTEXT:
+        glm_wf.connect(
+            [
+                (glm_experiment, glm_design, [("condition_remappings", "condition_remappings")]),
+            ]
+        )
+
     glm_wf.connect(
         [
             (glm_experiment, glm_design, [("paths", "paths")]),
@@ -232,8 +243,8 @@ for sub, sub_items in iter_items.items():
 
     glm_wf.connect([(glm_betas, datasink, [("betas_file", "betas")])])
 
-    glm_wf.run()
+    # glm_wf.run()
 
-    # glm_wf.run(
-    #     plugin="SLURMGraph", plugin_args={"dont_resubmit_completed_jobs": False}
-    # )
+    glm_wf.run(
+        plugin="SLURMGraph", plugin_args={"dont_resubmit_completed_jobs": False}
+    )
