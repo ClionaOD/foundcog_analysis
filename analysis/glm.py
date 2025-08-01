@@ -440,7 +440,7 @@ class GLMDesign(BaseInterface):
         events_df["trial_type"] = events_df["trial_type"].str.replace("_", "")
 
         implicit_baseline = (
-            "fixation" if "fixation" in trial_types else "attention_getter"
+            "fixation" if "fixation" in trial_types else "attentiongetter"
         )
         events_df = events_df[
             events_df["trial_type"] != implicit_baseline
