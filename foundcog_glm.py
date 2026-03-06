@@ -1,3 +1,23 @@
+"""
+foundcog_glm.py — Subject-level GLM pipeline for the FOUNDCOG dataset (pictures task).
+
+This script builds and runs a NiPype workflow that fits a General Linear Model
+for each subject/session/run in the BIDS dataset. For each run it:
+  1. Resolves file paths (functional image, events, motion parameters)
+  2. Builds a design matrix with the chosen stimulus design strategy
+  3. Fits a first-level GLM using nilearn
+  4. Extracts per-condition beta coefficients for downstream MVPA
+
+Only the pictures task is supported in this public release.
+Outputs are written to <EXPERIMENT_DIR>/derivatives/foundcog_glm/.
+
+Configuration
+-------------
+Edit the block below labelled "### Configuration ###" before running.
+The script submits one NiPype workflow per subject to SLURM via the
+SLURMGraph plugin. To run locally set SINGLE_THREADED = True.
+"""
+
 from os import path
 
 from bids.layout import BIDSLayout
@@ -9,81 +29,100 @@ from nipype.interfaces.io import DataSink
 
 from analysis.glm import GLMExperimentSetter, GLMDesign, GLMRun, GLMBetas
 
-config.enable_debug_mode()
+# config.enable_debug_mode()  # uncomment for verbose NiPype logging
 
-##############
+# ============================================================
+# ### Configuration ###
+# ============================================================
 
-experiment_dir = path.abspath(path.join("/foundcog", "dataset_sharing"))
-database_path = path.abspath(path.join(experiment_dir, "bidsdatabase"))
-derivs_dir = path.join(
+# -- Execution --
+SINGLE_THREADED = False  # set True to run locally (no SLURM)
+
+# -- Paths --
+# Change EXPERIMENT_DIR to the root of your BIDS dataset
+EXPERIMENT_DIR = path.abspath(path.join("/foundcog", "dataset_sharing"))
+DATABASE_PATH = path.abspath(path.join(EXPERIMENT_DIR, "bidsdatabase"))
+DERIVS_DIR = path.join(
     "derivatives", "foundcog_preproc"
-)  # will be linked with experiment_dir when reading inputs to pipeline
-output_dir = path.join(
+)  # preprocessing derivatives, linked with EXPERIMENT_DIR when reading inputs
+OUTPUT_DIR = path.join(
     "derivatives", "foundcog_glm"
-)  # will be linked with experiment_dir in DataSink
+)  # GLM outputs, linked with EXPERIMENT_DIR in DataSink
 
+# -- Templates --
+# Templates live outside the BIDS dataset root
+TEMPLATES_DIR = "/foundcog/templates"
 
-FUNC_DERIVATIVES = "normalized_to_common_space"  # which functional images to use. E.g. alternative would be "smoothing"
-TR = 0.610
-FWD_CUTOFF = 1.5
+# -- Brain masks (by age cohort) --
+# Subject IDs starting with "2" are the younger cohort; "9" are the older cohort.
+BRAIN_MASK_MAP = {
+    "2": path.join(TEMPLATES_DIR, "mask", "nihpd_asym_02-05_fcgmask_2mm.nii.gz"),  # younger cohort (2XXX)
+    "9": path.join(TEMPLATES_DIR, "mask", "nihpd_asym_08-11_fcgmask_2mm.nii.gz"),  # older cohort (9XXX)
+}
 
-EXEMPLAR = False  # whether to use exemplar marking
-REPETITIONS = True  # whether to use repetition marking
+# -- Acquisition parameters --
+TR = 0.610  # repetition time in seconds
 
-GAZE = False  # whether to use gaze coding
+# -- Motion censoring --
+FWD_CUTOFF = 1.5  # framewise displacement threshold (mm); runs exceeding this are excluded
 
-VIDEO_TAGS = False  # whether to use video tags
-TAG_PATH = "/home/clionaodoherty/foundcog_pipeline/events_per_movie_longlist_new.pickle"
-CHOSEN_TAGS = ["faces", "body_parts", "tools"]  # tags
-# IMPORTANT: name this something that pertains to the tags you are using
-TAG_SAVE_NAME = "categoryselectivity"
+# -- Functional derivative to use as input --
+# "normalized_to_common_space" is the standard choice; "smoothing" is an alternative
+FUNC_DERIVATIVES = "normalized_to_common_space"
 
-OBJ_CONTEXT = True
+# -- GLM design options --
+EXEMPLAR = True    # mark each stimulus exemplar as a separate condition
+REPETITIONS = False  # mark repeated presentations (odd/even scheme)
 
-## setup directory
+# -- Subject / task filtering --
+EXCLUDE_SUBS = []  # subjects to exclude (e.g. TR/sync issues)
+# TODO (pre-release): remove this override to run all subjects
+SUBJECT_LIST_OVERRIDE = None  # set to None to run all subjects
+
+EXCLUDE_TASKS = ["rest10", "rest5", "videos"]  # tasks never included in this pipeline
+
+# ============================================================
+# ### Pipeline parameter string (used in output directory names) ###
+# ============================================================
+
 _exemplar = "_exemplar" if EXEMPLAR else ""
 _repetitions = "_repetitions" if REPETITIONS else ""
-_gaze = "_gaze" if GAZE else ""
-_video_tags = "_video_tags" if VIDEO_TAGS else ""
-_obj_context = "_objascontext" if OBJ_CONTEXT else ""
-pipeline_param_str = f"{_exemplar}{_repetitions}{_gaze}{_video_tags}{_obj_context}"
+pipeline_param_str = f"{_exemplar}{_repetitions}"
 if pipeline_param_str == "":
-    pipeline_param_str = "_default"  # default case if no parameters are set
-if VIDEO_TAGS:
-    pipeline_param_str += f"_{TAG_SAVE_NAME}"  # add tag save name if using video tags. Will fail if not set
+    pipeline_param_str = "_default"
 
+# ============================================================
+# ### Subject / task discovery ###
+# ============================================================
 
-layout = BIDSLayout(experiment_dir, database_path=database_path)
+layout = BIDSLayout(EXPERIMENT_DIR, database_path=DATABASE_PATH)
 
-# list of subject identifiers
 subject_list = layout.get_subjects()
 task_list = layout.get_tasks()
 session_list = layout.get_sessions()
 run_list = layout.get_runs()
 
-# Painful lession - if these aren't sorted, order varies across runs and causes the whole pipeline to rerun
+# Sort to ensure stable ordering — without this, varying order causes NiPype to rerun jobs
 subject_list.sort()
 task_list.sort()
 session_list.sort()
 run_list.sort()
 
-## Exclude 9022 because TRs/syncing messed up
-exclude_subs = ["9022"]
-subject_list = [i for i in subject_list if not i in exclude_subs]
+subject_list = [s for s in subject_list if s not in EXCLUDE_SUBS]
+if SUBJECT_LIST_OVERRIDE is not None:
+    subject_list = SUBJECT_LIST_OVERRIDE
 
-subject_list.sort()
-subject_list = ["2001", "2002"]
+task_list = [t for t in task_list if t not in EXCLUDE_TASKS]
 
-exclude_tasks = ["rest10", "rest5"]
-if VIDEO_TAGS:
-    exclude_tasks.append("pictures")
-task_list = [i for i in task_list if not i in exclude_tasks]
+print(f"Subjects: {subject_list}")
+print(f"Tasks:    {task_list}")
 
-print(f"Subjects {subject_list}")
-print(f"Tasks {task_list}")
+# ============================================================
+# ### Build per-subject run lists ###
+# ============================================================
 
-
-## Getting values to iterate over for each subject
+# For each subject, find which (session, task, run) combinations have data on disk.
+# NiPype requires all iterables to be the same length and stepped in sync.
 iter_items = {}
 for sub in subject_list:
     iter_items[sub] = {"ses": [], "task": [], "run": []}
@@ -91,8 +130,8 @@ for sub in subject_list:
         for task in task_list:
             for run in run_list:
                 sub_expt_paths = GLMExperimentSetter(
-                    base_dir=experiment_dir,
-                    derivative_dir=derivs_dir,
+                    base_dir=EXPERIMENT_DIR,
+                    derivative_dir=DERIVS_DIR,
                     func_deriv=FUNC_DERIVATIVES,
                     sub=sub,
                     task=task,
@@ -102,33 +141,39 @@ for sub in subject_list:
                 sub_expt_paths._set_expt_paths()
                 func_file = sub_expt_paths.func_file
 
-                info = {
-                    "sub": sub,
-                    "session": ses,
-                    "task": task,
-                    "run": run,
-                }
+                info = {"sub": sub, "session": ses, "task": task, "run": run}
                 target_file = func_file.format(**info)
-                if path.isfile(path.join(experiment_dir, target_file)):
+                if path.isfile(path.join(EXPERIMENT_DIR, target_file)):
                     iter_items[sub]["ses"].append(str(ses))
                     iter_items[sub]["task"].append(str(task))
                     iter_items[sub]["run"].append(str(run))
 
+    if len(iter_items[sub]["ses"]) == 0:
+        iter_items.pop(sub, None)
+
+# ============================================================
+# ### Workflow construction and execution (one workflow per subject) ###
+# ============================================================
+
 for sub, sub_items in iter_items.items():
-    # NiPype setup
-    working_dir = path.join("workingdir", sub)
 
-    glm_wf = Workflow(name="foundcog_glm")
-    glm_wf.base_dir = path.join(experiment_dir, working_dir)
+    # Select brain mask based on age cohort (2XXX = younger, 9XXX = older)
+    brain_mask = BRAIN_MASK_MAP[sub[0]]
 
+    working_dir = path.join("workingdir", pipeline_param_str.lstrip("_"), sub)
+    glm_wf = Workflow(name=f"foundcog_glm{pipeline_param_str}")
+    glm_wf.base_dir = path.join(EXPERIMENT_DIR, working_dir)
+
+    # infosource_sub iterates over the subject ID and pipeline config string
     infosource_sub = Node(
         IdentityInterface(fields=["sub", "config"]), name="infosource_sub"
     )
     infosource_sub.iterables = [
         ("sub", [sub]),
-        ("config", [pipeline_param_str[1:]]),
-    ]  # remove leading underscore
+        ("config", [pipeline_param_str[1:]]),  # strip leading underscore
+    ]
 
+    # infosource steps through (session, task, run) in lock-step
     infosource = Node(
         IdentityInterface(fields=["session", "task", "run"]), name="infosource"
     )
@@ -137,21 +182,16 @@ for sub, sub_items in iter_items.items():
         ("task", sub_items["task"]),
         ("run", sub_items["run"]),
     ]
-    infosource.synchronize = (
-        True  # synchronised stepping through each of the iterable lists
-    )
+    infosource.synchronize = True  # step through all three lists together
     glm_wf.connect([(infosource_sub, infosource, [("sub", "sub")])])
 
-    # Firstly get the paths for all files we need. This is experiment specific.
-    # Make sure paths in analysis/glm.py are correct
+    # Resolve file paths for this subject/session/task/run
     glm_experiment = Node(GLMExperimentSetter(), name="glm_experiment")
-    glm_experiment.inputs.base_dir = experiment_dir
-    glm_experiment.inputs.derivative_dir = path.join(experiment_dir, derivs_dir)
-    glm_experiment.inputs.motion_param_deriv = (
-        "motion_parameters"  # for 6 motion params
-    )
-    glm_experiment.inputs.fwd_deriv = "motion_fwd"  # for values use in GLM censoring, standard is framewise displacement
-    glm_experiment.inputs.func_deriv = FUNC_DERIVATIVES  # which functional images to use. E.g. alternative would be "smoothing"
+    glm_experiment.inputs.base_dir = EXPERIMENT_DIR
+    glm_experiment.inputs.derivative_dir = path.join(EXPERIMENT_DIR, DERIVS_DIR)
+    glm_experiment.inputs.motion_param_deriv = "motion_parameters"  # 6 motion params
+    glm_experiment.inputs.fwd_deriv = "motion_fwd"  # framewise displacement values
+    glm_experiment.inputs.func_deriv = FUNC_DERIVATIVES
 
     glm_wf.connect(
         [
@@ -168,25 +208,11 @@ for sub, sub_items in iter_items.items():
         ]
     )
 
+    # Build design matrix and confound regressors
     glm_design = Node(GLMDesign(), name="glm_design")
-    ## inputs
     glm_design.inputs.fwd_cutoff = FWD_CUTOFF
     glm_design.inputs.repetition_marking = REPETITIONS
     glm_design.inputs.exemplar_marking = EXEMPLAR
-    ## other options
-    glm_design.inputs.gaze_coding = GAZE
-    
-    glm_design.inputs.video_tag_marking = VIDEO_TAGS
-    glm_design.inputs.video_tag_path = TAG_PATH
-    glm_design.inputs.chosen_tags = CHOSEN_TAGS
-
-    glm_design.inputs.objects_as_context = OBJ_CONTEXT
-    if OBJ_CONTEXT:
-        glm_wf.connect(
-            [
-                (glm_experiment, glm_design, [("condition_remappings", "condition_remappings")]),
-            ]
-        )
 
     glm_wf.connect(
         [
@@ -195,11 +221,10 @@ for sub, sub_items in iter_items.items():
         ]
     )
 
+    # Fit first-level GLM
     glm_run = Node(GLMRun(), name="glm_run")
     glm_run.inputs.tr = TR
-    glm_run.inputs.brain_mask = (
-        "/foundcog/templates/mask/nihpd_asym_02-05_fcgmask_2mm.nii.gz"
-    )
+    glm_run.inputs.brain_mask = brain_mask
 
     glm_wf.connect(
         [
@@ -215,23 +240,7 @@ for sub, sub_items in iter_items.items():
         ]
     )
 
-    datasink = Node(DataSink(), name="datasink")
-    datasink.inputs.base_directory = experiment_dir
-    datasink.inputs.container = output_dir
-
-    datasink.inputs.regexp_substitutions = [
-        # Handle empty config: _config__sub_ICC103 → sub-ICC103
-        (r"_config__sub_([\w]+)", r"sub-\1"),
-        # General case: _config_repetitions_sub_ICC103 → sub-ICC103/repetitions
-        (r"_config_([\w_]+)_sub_([\w]+)", r"sub-\2/\1"),
-        # Session/run/task cleanup
-        (r"_run_(\d+)_session_(\d+)_task_([^/]+)", r"ses-\2_run-\1_task-\3"),
-        # Optional: remove stray "/_"
-        (r"/_", r"/"),
-    ]
-
-    glm_wf.connect([(glm_run, datasink, [("fit_models_file", "models")])])
-
+    # Extract per-condition beta coefficients
     glm_betas = Node(GLMBetas(), name="glm_betas")
     glm_wf.connect(
         [
@@ -241,10 +250,27 @@ for sub, sub_items in iter_items.items():
         ]
     )
 
+    # Save outputs
+    datasink = Node(DataSink(), name="datasink")
+    datasink.inputs.base_directory = EXPERIMENT_DIR
+    datasink.inputs.container = OUTPUT_DIR
+    datasink.inputs.regexp_substitutions = [
+        # _config__sub_2001  →  sub-2001
+        (r"_config__sub_([\w]+)", r"sub-\1"),
+        # _config_repetitions_sub_2001  →  sub-2001/repetitions
+        (r"_config_([\w_]+)_sub_([\w]+)", r"sub-\2/\1"),
+        # _run_1_session_1_task_videos  →  ses-1_run-1_task-videos
+        (r"_run_(\d+)_session_(\d+)_task_([^/]+)", r"ses-\2_run-\1_task-\3"),
+        (r"/_", r"/"),
+    ]
+
+    glm_wf.connect([(glm_run, datasink, [("fit_models_file", "models")])])
     glm_wf.connect([(glm_betas, datasink, [("betas_file", "betas")])])
 
-    # glm_wf.run()
-
-    glm_wf.run(
-        plugin="SLURMGraph", plugin_args={"dont_resubmit_completed_jobs": False}
-    )
+    if SINGLE_THREADED:
+        glm_wf.run()
+    else:
+        glm_wf.run(
+            plugin="SLURMGraph",
+            plugin_args={"dont_resubmit_completed_jobs": False},
+        )

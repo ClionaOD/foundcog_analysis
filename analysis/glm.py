@@ -51,10 +51,6 @@ class GLMExperimentOutputSpec(TraitedSpec):
     conditions = traits.List(
         traits.Str, desc="List of conditions for the experiment based on the task"
     )
-    condition_remappings = traits.Dict(
-        desc="Mapping of original conditions to new conditions"
-    )
-
 
 class GLMExperimentSetter(BaseInterface):
 
@@ -71,7 +67,6 @@ class GLMExperimentSetter(BaseInterface):
         paths = self._get_fnames()
 
         self._results["conditions"] = self._get_experiment_conditions()
-        self._results["condition_remappings"] = self._set_condition_remappings()
 
         self._results["paths"] = paths
         return runtime
@@ -80,15 +75,15 @@ class GLMExperimentSetter(BaseInterface):
         return self._results
 
     def _set_expt_paths(self):
-        # Set paths for the experiment
+        func_filename = "sub-{sub}_ses-{session}_task-{task}_dir-AP_run-{run}_bold_mcf_corrected_flirt.nii.gz"
+        if "smooth" in self.inputs.func_deriv:
+            func_filename = func_filename.replace(".nii.gz", "_smooth.nii.gz")
+        # Path matches the BIDS-style output produced by foundcog_preproc's DataSink
         self.func_file = path.join(
-            self.inputs.base_dir,
             self.inputs.derivative_dir,
             self.inputs.func_deriv,
             "sub-{sub}",
-            "ses-{session}_run-{run}_task-{task}",
-            # TODO: fix for other filenames
-            "sub-{sub}_ses-{session}_task-{task}_dir-AP_run-{run}_bold_mcf_corrected_flirt.nii.gz",
+            func_filename,
         )
 
         self.event_file = path.join(
@@ -104,7 +99,6 @@ class GLMExperimentSetter(BaseInterface):
             self.inputs.derivative_dir,
             self.inputs.motion_param_deriv,
             "sub-{sub}",
-            "ses-{session}_run-{run}_task-{task}",
             "sub-{sub}_ses-{session}_task-{task}_dir-AP_run-{run}_bold_mcf.nii.par",
         )
 
@@ -113,25 +107,9 @@ class GLMExperimentSetter(BaseInterface):
             self.inputs.derivative_dir,
             self.inputs.fwd_deriv,
             "sub-{sub}",
-            "ses-{session}_run-{run}_task-{task}",
-            "fd_power_2012.txt",
+            "sub-{sub}_ses-{session}_task-{task}_run-{run}_fd_power_2012.txt",
         )
     
-    def _set_condition_remappings(self):
-        if self.inputs.task != "pictures":
-            raise NotImplementedError(
-                f"Condition remappings for task {self.inputs.task} are not implemented. This setting is only working for the pictures task."
-            )
-        
-        return {
-            "bathsong":["rubberduck", "towel"],
-            "dog":["fence", "cat"],
-            "neworleans":["dishware", "food"],
-            "minionssupermarket":["shoppingcart", "shelves"],
-            "forest":["tree","squirrel"],
-            "moana":["seabird", "crab"],
-        }
-
     def _match_func_to_datafiles(self, funcrunpath):
         if self._infer_run:
             info = funcrunpath.split("/")[-1].split("_")
@@ -177,9 +155,14 @@ class GLMExperimentSetter(BaseInterface):
 
         if len(funcpaths) == 0:
             # try again without the corrected suffix, maybe there were no fmaps
-            self.func_file = self.func_file.replace(
-                "_corrected_flirt.nii.gz", "_flirt.nii.gz"
-            )
+            if 'smooth' in self.inputs.func_deriv:
+                self.func_file = self.func_file.replace(
+                    "_corrected_flirt_smooth.nii.gz", "_flirt_smooth.nii.gz"
+                )
+            else:
+                self.func_file = self.func_file.replace(
+                    "_corrected_flirt.nii.gz", "_flirt.nii.gz"
+                )
             funcpaths = glob.glob(
                 self.func_file.format(
                     sub=self.inputs.sub,
@@ -208,14 +191,7 @@ class GLMExperimentSetter(BaseInterface):
     def _get_experiment_conditions(self):
         # Set the conditions for the experiment based on the task
         if self.inputs.task == "videos":
-            return [
-                "bathsong",
-                "dog",
-                "neworleans",
-                "minionssupermarket",
-                "forest",
-                "moana",
-            ]
+            raise NotImplementedError("FOUNDCOG Videos task will be available with future releases. Please check back for updates.")
         elif self.inputs.task == "pictures":
             return [
                 "seabird",
@@ -267,31 +243,6 @@ class GLMDesignInputSpec(BaseInterfaceInputSpec):
         desc="Whether to include tags from the MRI camera recordings in the design matrix",
     )
 
-    video_tag_marking = traits.Bool(
-        default_value=False,
-        usedefault=True,
-        desc="Whether to include video tags from stimulus design in the design matrix",
-    )
-    video_tag_path = traits.Str(
-        default_value="events_per_movie_longlist_new.pickle",
-        usedefault=True,
-        desc="Path to the video tags file for video tag marking",
-    )
-    chosen_tags = traits.List(
-        traits.Str(),
-        desc="List of chosen video tags for analysis",
-    )
-
-    objects_as_context = traits.Bool(
-        default_value=False,
-        usedefault=True,
-        desc="Whether to include objects as context in the design matrix",
-    )
-    condition_remappings = traits.Dict(
-        desc="Mapping of conditions to their respective object labels",
-    )
-
-
 class GLMDesignOutputSpec(TraitedSpec):
     design_elements_perrun = traits.Dict(desc="Design elements for each run")
     design_settings = traits.Dict(
@@ -316,9 +267,7 @@ class GLMDesign(BaseInterface):
             "fwd_cutoff": self.inputs.fwd_cutoff,
             "repetition_marking": self.inputs.repetition_marking,
             "exemplar_marking": self.inputs.exemplar_marking,
-            "gaze_coding": self.inputs.gaze_coding,
-            "video_tag_marking": self.inputs.video_tag_marking,
-            "objects_as_context": self.inputs.objects_as_context,
+            "gaze_coding": self.inputs.gaze_coding
         }
 
         if not (self.inputs.repetition_marking) and not (self.inputs.exemplar_marking):
@@ -329,25 +278,6 @@ class GLMDesign(BaseInterface):
         if (self.inputs.exemplar_marking) and (self.inputs.task != "pictures"):
             raise ValueError(
                 "Exemplar marking is only applicable for the 'pictures' task."
-            )
-
-        if (self.inputs.video_tag_marking) and (self.inputs.task != "videos"):
-            raise ValueError(
-                "Video tag marking is only applicable for the 'videos' task."
-            )
-        
-        if (self.inputs.video_tag_marking) and not path.exists(self.inputs.video_tag_path):
-            raise ValueError(
-                f"Video tag file not found: {self.inputs.video_tag_path}. Please provide a valid path."
-            )
-        
-        if (self.inputs.objects_as_context) and (self.inputs.task != "pictures"):
-            raise ValueError(
-                "Objects as context is only applicable for the 'pictures' task."
-            )
-        if (self.inputs.objects_as_context) and (self.inputs.exemplar_marking):
-            raise ValueError(
-                "Cannot mark exemplars when objects are remapped to their context. Repetitions will use odd/even."
             )
 
         nruns = len(self.inputs.paths["events"])
@@ -429,47 +359,6 @@ class GLMDesign(BaseInterface):
         tag_names = tags.columns.to_list()
         return tags, tag_names
 
-    def _get_objects_as_context(self, events_df):
-        new_events = []
-        for _, row in events_df.iterrows():
-            trial_type = row["trial_type"]
-            for context, objlist in self.inputs.condition_remappings.items():
-                if trial_type in objlist:
-                    new_row = row.copy()
-                    new_row["trial_type"] = context
-                    new_events.append(new_row.to_frame().T)
-        return pd.concat(new_events, ignore_index=True)
-
-    def _get_video_tag_events(self, events_df):
-
-        video_tags = pd.read_pickle(self.inputs.video_tag_path)
-        video_tags = {k.replace(".mp4", "").replace("_",""): v for k, v in video_tags.items()}
-        video_tags = {
-            k: df[df["trial_type"].isin(self.inputs.chosen_tags)] for k, df in video_tags.items()
-        }
-
-        new_events = []
-        for _, row in events_df.iterrows():
-            trial_type = row["trial_type"]
-            
-            if trial_type not in video_tags.keys():
-                new_events.append(row.to_frame().T)
-                continue
-            
-            video_tagged_events = video_tags[trial_type]
-            if video_tagged_events.empty:
-                new_events.append(row.to_frame().T)
-                continue
-            
-            video_onset = row["onset"]
-            adjusted_tagged_events = video_tagged_events.copy()
-            adjusted_tagged_events.loc[:, "onset"] += video_onset
-            new_events.append(adjusted_tagged_events)
-        new_events_df = pd.concat(new_events, ignore_index=True)
-        new_events_df.drop(columns=["magnitude"], inplace=True)
-        new_events_df.sort_values(by=["onset"], inplace=True, ignore_index=True)
-        return new_events_df
-
     def _load_events(self, event_path):
         events_df = pd.read_csv(event_path, sep="\t")
         trial_types = events_df["trial_type"].unique()
@@ -487,20 +376,11 @@ class GLMDesign(BaseInterface):
             events_df["trial_type"] != implicit_baseline
         ]  # remove implicit baseline
 
-        if self.inputs.video_tag_marking:
-            events_df = self._get_video_tag_events(events_df)
-        
-        if self.inputs.objects_as_context:
-            events_df = self._get_objects_as_context(events_df)
-
         if self.inputs.exemplar_marking:
             events_df = self._get_exemplar_events(events_df)
 
         if (self.inputs.repetition_marking):
-            if (self.inputs.video_tag_marking) or (self.inputs.objects_as_context):
-                events_df = self._get_odd_even_events(events_df)
-            else: 
-                events_df = self._get_repetition_events(events_df)
+            events_df = self._get_repetition_events(events_df)
 
         return events_df
 
@@ -674,14 +554,9 @@ class GLMRun(BaseInterface):
             else ""
         )
         _gaze = "_gaze" if self.inputs.design_settings.get("gaze_coding", True) else ""
-        _video_tags = (
-            "_video_tags"
-            if self.inputs.design_settings.get("video_tag_marking", True)
-            else ""
-        )
 
         save_file = path.abspath(
-            f"sub-{self.inputs.sub}_task-{self.inputs.task}{_repetitions}{_exemplars}{_gaze}{_video_tags}_models.pickle"
+            f"sub-{self.inputs.sub}_task-{self.inputs.task}{_repetitions}{_exemplars}{_gaze}_models.pickle"
         )
         with open(save_file, "wb") as f:
             pickle.dump(fit_models_perrun, f)
@@ -799,12 +674,9 @@ class GLMBetas(BaseInterface):
             "_exemplar" if design_settings.get("exemplar_marking", True) else ""
         )
         _gaze = "_gaze" if design_settings.get("gaze_coding", True) else ""
-        _video_tags = (
-            "_video_tags" if design_settings.get("video_tag_marking", True) else ""
-        )
 
         save_file = path.abspath(
-            f"sub-{self.inputs.sub}_task-{self.inputs.task}{_repetitions}{_exemplars}{_gaze}{_video_tags}_voxelwise_betas.pickle"
+            f"sub-{self.inputs.sub}_task-{self.inputs.task}{_repetitions}{_exemplars}{_gaze}_voxelwise_betas.pickle"
         )
         with open(save_file, "wb") as f:
             pickle.dump(betas_perrun, f)
@@ -877,16 +749,10 @@ class GLMBetas(BaseInterface):
 
 if __name__ == "__main__":
 
-    public_dirs = True
 
-    if public_dirs:
-        SUB = "2001"
-        INP_DIR = "/foundcog/dataset_sharing"
-        DERIV_DIR = "derivatives/foundcog_preproc"
-    else:
-        SUB = "ICC103"
-        INP_DIR = "/foundcog/bids"
-        DERIV_DIR = "derivatives"
+    SUB = "2001"
+    INP_DIR = "/foundcog/dataset_sharing"
+    DERIV_DIR = "derivatives/foundcog_preproc"
 
     TASK = "pictures"
 
@@ -905,7 +771,6 @@ if __name__ == "__main__":
     path_output = glm_experiment.run()
     paths = path_output.outputs.paths
     conditions = path_output.outputs.conditions
-    condition_remappings = path_output.outputs.condition_remappings
 
     ## GET DESIGN MATRIX
     glm_design = Node(GLMDesign(), name="glm_design_node")
@@ -915,10 +780,6 @@ if __name__ == "__main__":
     glm_design.inputs.repetition_marking = False
     glm_design.inputs.exemplar_marking = False
     glm_design.inputs.gaze_coding = False
-    glm_design.inputs.video_tag_marking = False
-    glm_design.inputs.objects_as_context = True
-    if glm_design.inputs.objects_as_context:
-        glm_design.inputs.condition_remappings = condition_remappings
 
     glm_design.inputs.paths = paths
 
