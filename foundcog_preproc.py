@@ -1,3 +1,23 @@
+"""
+foundcog_preproc.py — Subject-level preprocessing pipeline for the FOUNDCOG dataset.
+
+This script builds and runs a NiPype workflow that preprocesses BOLD fMRI data
+for each subject/session/run in the BIDS dataset. For each run it:
+  1. Applies BOLD-specific preprocessing (motion correction)
+  2. Estimates and applies fieldmap-based distortion correction (topup/applytopup)
+  3. Co-registers runs to a within-subject mean reference
+  4. Normalises to an age-appropriate common space (NIHPD template)
+  5. Applies spatial smoothing and extracts ROI timecourses
+
+Outputs are written to <experiment_dir>/derivatives/foundcog_preproc/.
+
+Configuration
+-------------
+Edit the variables near the top of this file before running.
+The script submits one NiPype workflow per subject to SLURM via the
+SLURMGraph plugin. To run locally set SINGLE_THREADED = True.
+"""
+
 import glob
 import json
 import os
@@ -19,7 +39,7 @@ from preproc.bold_preproc import get_wf_bold_preproc
 
 SINGLE_THREADED = False
 
-config.enable_debug_mode()
+# config.enable_debug_mode()  # uncomment for verbose NiPype logging
 
 exclude_subjects = []
 
@@ -41,19 +61,42 @@ layout = BIDSLayout(experiment_dir, database_path=database_path)
 # Path to the reference files, such as templates
 reference_files_path = path.abspath(path.join(".", "preproc", "reference_files"))
 
+# -- Templates --
+# Templates live outside the BIDS dataset root
+TEMPLATES_DIR = "/foundcog/templates"
+
+# Age-appropriate templates keyed by first character of subject ID
+# Subject IDs starting with "2" are the younger cohort; "9" are the older cohort.
+TEMPLATE_MAP = {
+    "2": path.join(TEMPLATES_DIR, "mask", "nihpd_asym_02-05_t2w_fcgmasked.nii.gz"),
+    "9": path.join(TEMPLATES_DIR, "mask", "nihpd_asym_08-11_t2w_fcgmasked.nii.gz"),
+}
+TEMPLATE_NORM_MAP = {
+    "2": path.join(TEMPLATES_DIR, "nihpd_asym", "nihpd_asym_02-05_t2w.nii"),
+    "9": path.join(TEMPLATES_DIR, "nihpd_asym", "nihpd_asym_08-11_t2w.nii"),
+}
+TEMPLATE_NORM_2MM_MAP = {
+    "2": path.join(TEMPLATES_DIR, "mask", "nihpd_asym_02-05_t2w_2mm.nii.gz"),
+    "9": path.join(TEMPLATES_DIR, "mask", "nihpd_asym_08-11_t2w_2mm.nii.gz"),
+}
+SCHAEFER_ROI_MAP = {
+    "2": path.join(TEMPLATES_DIR, "rois", "Schaefer2018_400Parcels_7Networks_order_space-nihpd-02-05_2mm.nii.gz"),
+    "9": path.join(TEMPLATES_DIR, "rois", "Schaefer2018_400Parcels_7Networks_order_space-nihpd-08-11_2mm.nii.gz"),
+}
+
 # list of subject identifiers
 subject_list = layout.get_subjects()
 task_list = layout.get_tasks()
 session_list = layout.get_sessions()
 run_list = layout.get_runs()
 
-# Painful lession - if these aren't sorted, order varies across runs and causes the whole pipeline to rerun
+# Painful lesson - if these aren't sorted, order varies across runs and causes the whole pipeline to rerun
 subject_list.sort()
 task_list.sort()
 session_list.sort()
 run_list.sort()
 
-# # TR of functional images
+# TR of functional images — read from the BIDS sidecar
 with open(path.join(experiment_dir, "task-pictures_bold.json"), "rt") as fp:
     task_info = json.load(fp)
 TR = task_info["RepetitionTime"]
@@ -181,7 +224,7 @@ for sub, sub_items in iter_items.items():
         True  # synchronised stepping through each of the iterable lists
     )
 
-    # SelectFiles - to grab the data (alternativ to DataGrabber)
+    # SelectFiles - to grab the data (alternative to DataGrabber)
     templates = {"func": func_file, "events": event_file}
     selectfiles = Node(
         SelectFiles(templates, base_directory=experiment_dir), name="selectfiles"
@@ -466,29 +509,15 @@ for sub, sub_items in iter_items.items():
         name="submean",
     )
 
-    # Location of template file
-    ## TODO: paths
-    if sub[0] == "9":
-        template = "/foundcog/templates/mask/nihpd_asym_08-11_t2w_fcgmasked.nii.gz"
-        template_for_norm = "/foundcog/templates/nihpd_asym/nihpd_asym_08-11_t2w.nii"
-        template_for_norm_2mm = (
-            "/foundcog/templates/mask/nihpd_asym_08-11_t2w_2mm.nii.gz"
-        )
-    else:
-        template = "/foundcog/templates/mask/nihpd_asym_02-05_t2w_fcgmasked.nii.gz"
-        template_for_norm = "/foundcog/templates/nihpd_asym/nihpd_asym_02-05_t2w.nii"
-        template_for_norm_2mm = (
-            "/foundcog/templates/mask/nihpd_asym_02-05_t2w_2mm.nii.gz"
-        )
+    # Age-appropriate template: 9XXX subjects use the older-infant template, 2XXX use the younger-infant template
+    cohort = sub[0]
+    template = TEMPLATE_MAP[cohort]
+    template_for_norm = TEMPLATE_NORM_MAP[cohort]
+    template_for_norm_2mm = TEMPLATE_NORM_2MM_MAP[cohort]
 
     # Location of roi file
     schaefer_roi_labels = np.arange(1, 401).tolist()
-
-    # TODO: change this to Julich and Schaefer paths
-    if sub[0] == "9":
-        schaefer_roi = "/foundcog/templates/rois/Schaefer2018_400Parcels_7Networks_order_space-nihpd-08-11_2mm.nii.gz"
-    else:
-        schaefer_roi = "/foundcog/templates/rois/Schaefer2018_400Parcels_7Networks_order_space-nihpd-02-05_2mm.nii.gz"
+    schaefer_roi = SCHAEFER_ROI_MAP[cohort]
 
     def flirt_fig(in_file, template):
         import os
@@ -608,7 +637,6 @@ for sub, sub_items in iter_items.items():
         name=f"out_file",
     )
 
-    # absolute path from experiment_dir will be used in line516 below
     working_dir = path.join("workingdir", sub)
 
     # BOLD preprocessing workflow
@@ -874,7 +902,6 @@ for sub, sub_items in iter_items.items():
     if SINGLE_THREADED:
         preproc.run()
     else:
-        # Or SLURM?
         preproc.run(
             plugin="SLURMGraph",
             plugin_args={
